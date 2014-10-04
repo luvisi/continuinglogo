@@ -1,4 +1,4 @@
-continuinglogo
+ContinuingLogo
 ==============
 
 A Logo interpreter with dynamic scope, shallow binding, tail call
