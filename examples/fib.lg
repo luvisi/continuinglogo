@@ -1,0 +1,5 @@
+to fib :n
+  ifelse :n < 3 [op 1] [op (fib :n - 1) + (fib :n - 2)]
+end
+print fib 30
+bye

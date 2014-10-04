@@ -1,0 +1,24 @@
+
+; (foo 0) will generate increasing stack growth on ucblogo but not on
+; ContinuingLogo.
+to foo :n
+  if (modulo :n 1000) = 0 [gc print nodes]
+  repeat 2 [output foo :n+1]
+end
+
+to bar :n
+  if (modulo :n 1000) = 0 [gc print nodes]
+  output bar :n+1
+end
+
+; (baz 0) will generate increasing stack growth on both ucblogo and on
+; ContinuingLogo.
+to baz :n
+  if (modulo :n 1000) = 0 [gc print nodes]
+  output quux :n + 1
+end
+
+to quux :n
+baz :n
+end
+

@@ -1,0 +1,46 @@
+
+; These are the numeric values of the upper and lower limits for
+; lower and upper case letters.
+make "lower.a ascii "a
+make "lower.z ascii "z
+make "upper.a ascii "A
+make "upper.z ascii "Z
+
+; addnums rotates a letter whose ascii value is in letter.num
+; through the alphabet by offset places.
+; letter.num is the numeric value of a letter being transformed.
+; offset is the amount to shift it in the alphabet.
+; a.num is the numeric value of either "a or "A depending on
+; whether letter.num represents an upper or lower case letter.
+to addnums :letter.num :offset :a.num
+  op :a.num + modulo (:letter.num-:a.num)+:offset 26
+end
+
+; letter.num is the ascii value of a letter.
+; If the letter is upper case, we output ASCII "A
+; If the letter is lower case, we output ASCII "a
+; Otherwise, we output 0.
+to get.a.num :letter.num
+  if and :letter.num >= :lower.a :letter.num <= :lower.z [op :lower.a]
+  if and :letter.num >= :upper.a :letter.num <= :upper.z [op :upper.a]
+  op 0
+end
+
+; Shift the one letter word letter by offset places in the alphabet.
+to shiftletter :letter :offset
+  localmake "letter.num ascii :letter
+  localmake "a.num get.a.num :letter.num
+  if :a.num = 0 [op :letter]
+  op char addnums :letter.num :offset :a.num
+end
+
+; Shift every letter in word by offset places in the alphabet.
+to shiftword :word :offset
+  op map [shiftletter ? :offset] :word
+end
+
+; Shift every letter in every word in sentence s by offset places in
+; the alphabet.
+to caesar :s :offset
+  op map [shiftword ? :offset] :s
+end

@@ -1,0 +1,20 @@
+
+Should FUNARG calls preserve the tail context of their callers?
+
+logoplatform special variable
+
+Improve the reader's handling of EOF conditions.
+
+Make the reader automatically continue lines on parenthesis (?)
+
+Change the symbol list into a hash table.
+    ic->name_list is only referenced in intern_len() and
+    cleanup_name_table(), both in list_memory.c
+
+Rename variables and procedures to reduce the probability of name capture.
+
+Make eval: begin just set things up and jump to apply: (?)
+
+Rewrite treeify() in lisp so that we can call LOAD for uninitialized
+procedures during treeification?
+If I do this, could I run macros during treeification?

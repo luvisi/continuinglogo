@@ -1,0 +1,137 @@
+
+make "lower.a ascii "a
+make "lower.z ascii "z
+make "upper.a ascii "A
+make "upper.z ascii "Z
+
+to letterp :letter.num
+  op or and :letter >= :lower.a :letter <= :lower.z ~
+        and :letter >= :upper.a :letter <= :upper.z
+end
+
+to letter.to.num :l
+  op (ascii lowercase :l) - :lower.a
+end
+
+to num.to.letter :n
+  op char :n + :lower.a
+end
+
+to false.subtract :letter.1 :letter.2
+  op num.to.letter modulo 25 - (letter.to.num :letter.1) ~
+                             - (letter.to.num :letter.2) ~
+                          26
+end
+
+make "table [
+  air fog sot
+  bay has sun
+  elk man wad
+  ere our yon
+  eva peg
+
+  afu joc qup
+  aza juw sed
+  cax kap siz
+  eni kob tum
+  gil kuv ube
+  guz mif ulu
+  hik moz wez
+  ido ola wiv
+  iji oxo yex
+  jem pic yit
+          yuh
+
+  bbx kkf qrs
+  bvd lld rfd
+  ccv mmb rpt
+  ddt nnz rrr
+  etc phd tnt
+  ffp pow vvj
+  ggn ppv wwh
+  hhl pss xxf
+  jjh qqt zzb
+
+  bcw fhn kwt
+  bft fjl lcm
+  bgs fvz lyq
+  bhr ghm mqx
+  biq gjk mrw
+  bjp gwx msv
+  bln gyv nqw
+  cfs htz nrv
+  cgr hvx plz
+  chq iux pxn
+  ckn jaq pym
+  cyz jrz qef
+  dgq jtx slw
+  djn jys vlt
+  dkm kqz voq
+  dxz kry wyf
+  dyy ksx xlr
+
+  ; Not in the original table.
+  tag cud hoe
+]
+
+
+to check.tripple :tripple
+  localmake "l1 first :tripple
+  localmake "l2 first bf :tripple
+  localmake "l3 first bf bf :tripple
+
+  if (false.subtract :l1 :l2) <> :l3 [
+    (print [Invalid tripple:] :tripple)
+  ]
+end
+
+to check.table
+  foreach :table [check.tripple ?]
+end
+
+to check.completeness
+  localmake "letters "abcdefghijklmnopqrstuvwxyz
+  local "is.found
+
+  foreach :letters [ [l1]
+    foreach :letters [ [l2]
+      make "is.found "false
+      foreach :table [
+        if and memberp :l1 ? memberp :l2 ? [
+          make "is.found "true
+        ]
+      ]
+      if not :is.found [(print [Didn't find] :l1 :l2)]
+    ]
+  ]
+end
+
+to insertion.sort :stuff
+  if emptyp :stuff [op :stuff]
+  op insert first :stuff insertion.sort bf :stuff
+end
+
+to insert :thing :stuff
+  if emptyp :stuff [op combine :thing :stuff]
+  if beforep first :stuff :thing [
+    op combine first :stuff insert :thing bf :stuff
+  ]
+  op combine :thing :stuff
+end
+
+to otp :s :pad
+  if listp :pad [make "pad apply "word :pad]
+  if not emptyp :s [otp.word first :s bf :s :pad]
+end
+
+to otp.word :w :s :pad
+  if emptyp :w [
+    if emptyp :s [(print) stop]
+    type "| |
+    otp.word first :s bf :s :pad
+  ] [
+    if emptyp :pad [throw "erorr "|Out of pad characters|]
+    type false.subtract first :w first :pad
+    otp.word bf :w :s bf :pad
+  ]
+end

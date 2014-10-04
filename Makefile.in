@@ -1,0 +1,50 @@
+
+PACKAGE_TARNAME=@PACKAGE_TARNAME@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+bindir=@bindir@
+datarootdir=@datarootdir@
+docdir=@docdir@
+librarydir=$(datarootdir)/$(PACKAGE_TARNAME)
+
+
+OBJECTS=gc.o interpreter.o list_memory.o main.o reader.o \
+        global_environment.o structures.o logoreader.o \
+        weak_cons.o treeify.o byte_buffer.o io.o ttymodes.o
+STRUCTURES=structures.c structures.h
+PROGRAM=clogo
+CC=gcc
+OPTFLAGS=-O3 -fno-align-functions
+#PROFILE_FLAGS=-pg
+DIRFLAGS=-DLIBRARYDIR=\"$(librarydir)\"
+CFLAGS=-g -Wall $(OPTFLAGS) $(PROFILE_FLAGS) $(DIRFLAGS)
+
+LDFLAGS=-lm $(PROFILE_FLAGS)
+
+all: $(PROGRAM)
+
+$(PROGRAM): $(STRUCTURES) $(OBJECTS)
+	$(CC) -o $@ $(OBJECTS) $(LDFLAGS)
+
+remake: clean all
+
+structures.c structures.h: declarations.pl
+	./declarations.pl
+
+.c.o:
+	$(CC) $(CFLAGS) -c $<
+    
+install: all
+	install -d $(bindir) $(librarydir)
+	install $(PROGRAM) $(bindir)
+	install initialize.txt logoinitialize.txt ucblogolib.txt $(librarydir)
+
+clean:
+	rm -f $(STRUCTURES) $(OBJECTS) $(PROGRAM) logo.temp.txt gmon.out *~
+
+distclean: clean
+	rm -rf config.log config.status Makefile config.h autom4te.cache \
+               autoscan.log
+
+realclean: distclean
+	rm -f configure

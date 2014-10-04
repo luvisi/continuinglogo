@@ -1,0 +1,5 @@
+
+(type [What is your name?] char 32)
+make "name readrawline
+(print "Hello :name)
+

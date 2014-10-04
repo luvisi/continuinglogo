@@ -1,0 +1,20 @@
+to foo
+print [foo first]
+depths
+bar
+print [foo second]
+depths
+end
+
+to bar
+print [bar first]
+depths
+print [bar second]
+depths
+end
+
+to depths
+collect_garbage
+(print nodes continuation_depth frame_depth)
+end
+

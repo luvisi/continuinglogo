@@ -1,0 +1,4 @@
+load "pascal
+compile "tower
+prun "tower
+bye

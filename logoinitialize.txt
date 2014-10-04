@@ -1,0 +1,447 @@
+
+to pick :thing
+  output item 1 + random count :thing :thing
+end
+bury "pick
+
+to plistp :thing
+  if wordp :thing [output (plist :thing) <> []]
+  output "false
+end
+bury "plistp
+
+copydef "plist? "plistp
+bury "plist?
+
+to save_source_helper :printer :getter :body
+  if :body = [] [stop]
+  if linep first :body [invoke :printer invoke :getter first :body]
+  save_source_helper :printer :getter butfirst :body
+end
+bury "save_source_helper
+
+to save_source.maybe.addcolon :arg
+    if wordp :arg [
+        if or emptyp :arg (first :arg) <> ": [op word ": :arg]
+        op :arg
+    ]
+    if listp :arg [op fput save_source.maybe.addcolon first :arg bf :arg]
+    op :arg
+end
+bury "save_source.maybe.addcolon
+
+to save_source.addcolons :args
+    op map "save_source.maybe.addcolon :args
+end
+bury "save_source.addcolons
+
+
+to save_source :proc
+  localmake "source symbol_source :proc
+
+  if :source = [] [
+    print (list "to :proc)
+    print "end
+    print "
+    stop
+  ]
+
+  if (line_raw first :source) = [] [
+      localmake "fullprintp "true
+      localmake "first_line line_parsed first :source
+      print (se "to :proc save_source.addcolons bf bf :first_line)
+      save_source_helper "print "line_parsed bf :source
+  ] [
+      localmake "fullprintp "false
+      save_source_helper "type "line_raw :source
+  ]
+  print "end
+  print "
+end
+bury "save_source
+
+to quote_if_name :thing
+  if and wordp :thing not numberp :thing [output word "" :thing]
+  output :thing
+end
+bury "quote_if_name
+
+to save_plist_helper :name :l
+  if :l = [] [stop]
+  (show "pprop word "" :name quote_if_name first :l ~
+                             quote_if_name first butfirst :l)
+  save_plist_helper :name butfirst butfirst :l
+end
+bury "save_plist_helper
+
+to save_plist :name
+  localmake "fullprintp "true
+  save_plist_helper :name plist :name
+end
+bury "save_plist
+
+to save_name :name
+  localmake "fullprintp "true
+  if not namep :name [stop]
+  (show "make word "" :name quote_if_name thing :name)
+end
+bury "save_name
+  
+to pon :names
+  if :names = [] [stop]
+  if wordp :names [save_name :names stop]
+  save_name first :names
+  pon butfirst :names
+end
+bury "pon
+
+to popl :names
+  if :names = [] [stop]
+  if wordp :names [save_plist :names stop]
+  save_plist first :names
+  popl butfirst :names
+end
+bury "popl
+
+to printout :contentslist
+  if :contentslist = [] [stop]
+  if wordp :contentslist [save_source :contentslist stop]
+  if wordp first :contentslist [
+      save_source first :contentslist
+      printout butfirst :contentslist
+      stop
+  ]
+  printout first :contentslist
+  make "contentslist butfirst :contentslist
+  if not emptyp :contentslist [
+      pon first :contentslist
+      make "contentslist butfirst :contentslist
+  ]
+  if not emptyp :contentslist [
+      popl first :contentslist
+  ]
+end
+bury "printout
+
+to pot.print.title :proc
+  localmake "source symbol_source :proc
+
+  if :source = [] [
+    print (list "to :proc)
+    print "end
+    print "
+    stop
+  ]
+
+  if (line_raw first :source) = [] [
+      localmake "fullprintp "true
+      localmake "first_line line_parsed first :source
+      print (se "to :proc save_source.addcolons bf bf :first_line)
+  ] [
+      localmake "fullprintp "false
+      type line_raw first :source
+  ]
+end
+bury "pot.print.title
+
+to pot :contentslist
+  if :contentslist = [] [stop]
+  if wordp :contentslist [pot.print.title :contentslist stop]
+  if wordp first :contentslist [
+      pot.print.title first :contentslist
+      pot butfirst :contentslist
+      stop
+  ]
+  pot first :contentslist
+  make "contentslist butfirst :contentslist
+  if not emptyp :contentslist [
+      pon first :contentslist
+      make "contentslist butfirst :contentslist
+  ]
+  if not emptyp :contentslist [
+      popl first :contentslist
+  ]
+end
+bury "pot
+
+copydef "po "printout
+bury "po
+
+.macro savecontents :file :contents
+  output (list "openwrite word "" :file          ~
+               "setwrite word "" :file           ~
+               "printout quote_if_name :contents ~
+               "setwrite []                      ~
+               "close word "" :file              ~
+               "print ""Saved)
+end
+bury "savecontents
+
+.macro save :file
+  output (list "savecontents quote_if_name :file "contents)
+end
+bury "save
+
+to load.helper
+  local "startup
+  logo
+  if namep "startup [run :startup]
+end
+bury "load.helper
+
+.macro load :file
+  localmake "oldreader reader
+  output (list "openread word "" :file    ~
+               "setread word "" :file     ~
+               "load.helper               ~
+               "setread quoted :oldreader ~
+               "close word "" :file       ~
+               "print ""Loaded)
+end
+bury "load
+
+to pause_caller :paused.procedure
+    pause
+end
+bury "pause_caller
+
+to pause
+    local "pause.error
+    localmake "pause.saved.input reader
+    localmake "pause.saved.output writer
+    setread []
+    setwrite []
+    localmake "result ~
+        runresult [catch "pause [
+           while ["true] [
+               catch "error [logo]
+               make "pause.error error
+               if :pause.error <> [] [print :pause.error]]]]
+    setread :pause.saved.input
+    setwrite :pause.saved.output
+    if :result <> [] [output first :result]
+end
+bury "pause
+
+to continue [:args]
+    if :args <> [] [(throw "pause first :args)]
+    throw "pause
+end
+bury "continue
+
+.macro c [:args]
+    output sentence "continue map "quote_if_name :args
+end
+bury "c
+
+.macro while :while.cond :while.instr
+if not run :while.cond [op []]
+op se :while.instr (list "while :while.cond :while.instr)
+end
+bury "while
+
+to read_lines_readlist
+    localmake "line readlist
+    if :line = " [output []]
+    output fput :line read_lines_readlist
+end
+bury "read_lines_readlist
+
+to read_lines_readword
+    localmake "line readword
+    if :line = [] [output []]
+    output fput :line read_lines_readword
+end
+bury "read_lines_readword
+
+to shell :command [:wordflag]
+    localmake "oldreader reader
+    local "result
+    openshell "shellfile :command
+    setread "shellfile
+    ifelse emptyp :wordflag [
+        make "result read_lines_readlist
+    ] [
+        make "result read_lines_readword
+    ]
+    setread :oldreader
+    close "shellfile
+    output :result
+end
+bury "shell
+
+to seteditor :e
+    make "edit.editor :e
+end
+bury "seteditor
+
+to edit.editor
+    if namep "edit.editor [output :edit.editor]
+    localmake "editor getenv "VISUAL
+    if :editor <> [] [output :editor]
+    make "editor getenv "EDITOR
+    if :editor <> [] [output :editor]
+    output "vi
+end
+bury [[edit.editor] [edit.editor]]
+
+to edit :contentslist [:tmp "logo.temp.txt]
+    savecontents :tmp :contentslist
+    localmake "status system (list edit.editor :tmp)
+    if :status <> 0 [throw "error [edit error]]
+    load :tmp
+end
+bury "edit
+
+to editfile :file
+    localmake "status system (list edit.editor :file)
+    if :status <> 0 [throw "error [edit error]]
+    load :file
+end
+bury "editfile
+
+copydef "ed "edit
+bury "ed
+
+to text :proc
+    localmake "source symbol_source :proc
+    localmake "args bf bf line_parsed first :source ; Skip "to <name>"
+    localmake "body map [line_parsed ?] bf :source
+    op fput :args :body
+end
+bury "text
+
+to rawtext :proc
+    localmake "source symbol_source :proc
+    if (line_raw first :source) = [] [
+        op map [line_parsed ?] :source
+    ] [
+        op map [line_raw ?] :source
+    ]
+end
+bury "rawtext
+    
+to procedures
+    op first contents
+end
+bury "procedures
+
+to primitives
+    op filter "primitivep oblist
+end
+bury "primitives
+
+to names
+    op (list [] first bf contents)
+end
+bury "names
+
+to plists
+    op (list [] [] first bf bf contents)
+end
+bury "plists
+
+to repcount
+  op :repcount
+end
+bury "repcount
+
+.macro repeat.helper :current.count :count :block
+  if :current.count < :count [
+    op (list "invoke "fput [repcount] :block :current.count ~
+        "repeat.helper :current.count+1 :count :block)
+  ] 
+  if :current.count = :count [
+    op (list "invoke "fput [repcount] :block :current.count)
+  ]
+  op []
+end
+bury "repeat.helper
+
+.macro repeat :count :block
+    op (list "repeat.helper 1 :count :block)
+end
+bury "repeat
+
+.macro forever.helper :current.count :block
+  op (list "invoke "fput [repcount] :block :current.count ~
+      "forever.helper :current.count+1 :block)
+end
+bury "forever.helper
+  
+.macro forever :block
+  op (list "forever.helper 1 :block)
+end
+bury "forever
+
+to erall
+  erase contents
+end
+bury "erall
+
+to erps
+  erase procedures
+end
+bury "erps
+
+to erns
+  erase names
+end
+bury "erns
+
+to erpls
+  erase plists
+end
+bury "erpls
+
+to lput :thing :group
+  if wordp :group [op word :group :thing]
+  if listp :group [op se :group (list :thing)]
+  throw "error (word "|Bad argument to lput: | :group)
+end
+bury "lput
+
+to firsts :l
+  op map "first :l
+end
+bury "firsts
+
+to butfirsts :l
+  op map "butfirst :l
+end
+bury "butfirsts
+
+copydef "bfs "butfirsts
+bury "bfs
+
+make "amb.continuation [(throw "error "|amb: Out of alternatives|)]
+to amb [:values]
+    output callcc [[return]
+        localmake "amb.old.continuation :amb.continuation
+        make "amb.continuation callcc [[resume] :resume]
+        if emptyp :values [
+            make "amb.continuation :amb.old.continuation
+            invoke :amb.continuation :amb.continuation
+        ]
+        localmake "ret first :values
+        make "values butfirst :values
+        invoke :return :ret
+    ]
+end
+bury [[amb] [amb.continuation]]
+
+to fail
+  (amb)
+end
+bury "fail
+
+to #
+  op :template.number
+end
+bury "#
+
+make "caseignoredp "true
+bury [[] [caseignoredp]]
+
+(print [Welcome to ContinuingLogo version] :logoversion)
+bury [[] [logoversion]]

@@ -1,0 +1,126 @@
+
+If you wish to understand how this interpreter works, here is the recommended
+order in which to read the different files.
+
+Read gc.h
+    This describes how to use the garbage collector.  The garbage collector
+    is independent, and does not know anything about the structure of the
+    rest of the interpreter.
+
+    However, the interface for the garbage collector has a deep and 
+    pervasive impact on the design of the rest of the program.
+
+Optional: Read gc.c
+    If you want to understand how the garbage collector works.  You do not
+    need to know this in order to understand the rest of the program, but
+    you do need to understand the garbage collector interface from gc.h.
+
+Read the beginning of declarations.pl
+    This Perl script generates structures.h and structures.c, which contain
+    the declarations for "struct sexpr" and "struct continuation", two of
+    the most important data structures in the interpreter.  They are both
+    tagged unions.
+
+    Also generated are the definitions and declarations for all of the mark_*
+    functions used to mark the different types of sexprs and continuations
+    during garbage collection (read gc.h to understand what this means),
+    and the mk_* functions used to create each of the different types of
+    sexprs and continuations.
+
+    The really important part is the declarations of $sexpr_type and
+    $continuation_type.  Trying to understand the Perl code that processes
+    these declarations may be painful.
+
+Skim over structures.h and structures.c
+    Notice how the declarations for "struct sexpr", "struct continuation",
+    and the mark_* and mk_* functions are related to $sexpr_type and
+    $continuation_type.
+
+Read "Shallow Binding in LISP 1.5" by Henry G. Baker, Jr.
+     https://dspace.mit.edu/bitstream/handle/1721.1/41975/AI_WP_138.pdf
+
+    This is the approach to frame management used by ContinuingLogo.
+    Every frame in the environment tree contains a pointer towards the root
+    and a pointer towards the currently active frame.
+
+    To change what frame is active, the pointers along the path from the
+    new frame to the current one are reversed.
+
+    Then the path from the current one to the new one is followed,
+    undoing bindings on the way up the tree towards the root until the
+    common ancestor is found, and redoing bindings on the way down the
+    tree from the root until the new current frame is found.
+
+Read list_memory.h and list_memory.c
+    This implements most of the list structure and environment frame
+    management for the interpreter.
+
+Read weak_cons.h and weak_cons.c
+    This implements cons cells whose cars are sometimes weak pointers.
+    They are used in the symbol list.  During garbage collection, the
+    car of a weak_cons is marked if it is a symbol that has a value, a
+    procedure, or any properties.  Otherwise, the car is registered as a
+    weak pointer.  This way, NAME objects that are no longer used, either
+    as strings elsewhere in the program, or as the name of a value, procedure,
+    or property list, can be garbage collected.
+
+Read interpreter.h and interpreter.c
+    Here's where the real magic happens.
+
+    eval() is heavily commented.  It's hundreds of lines long and contains
+    lots of gotos, but don't let that scare you.  It only has two main
+    parts, eval and apply.  Eval calculates the value of an expression.
+    Apply applies a continuation to the result of a computation.
+
+    Eval is a giant switch statement that dispatches based on the type of
+    the expression being evaluated.
+
+    Apply is a giant switch statement that dispatches based on the type of
+    the continuation being applied.
+
+Read byte_buffer.h
+    A byte_buffer is a buffer that can have bytes stuffed into it and will
+    expand as needed.  It is garbage collected as well.
+    byte_buffer's are used by readline in logoreader.c to provide the raw
+    version of lines read in by readline.
+
+Read io.h
+    This contains printf like procedures that will also print to a dribble
+    file or be redirected if SETWRITE has been used.  Also contains
+    procedures for printing sexpr's, for opening and closing files,
+    and for changing the read and write streams.
+
+Read ttymodes.h
+    Contains functions for setting the terminal into cbreak/cooked mode
+    and into nonblocking/blocking mode.
+
+Read reader.h
+    A recursive descent parser for a primitive lisp syntax.
+    Used to parse initialize.txt
+
+Read logoreader.h
+    A recursive descent parser for reading Logo expressions.
+
+Read treeify.h
+    A recursive descent parser for transforming a line of Logo into a
+    lisp expression.  Based on an approach from functional programming
+    where each function returns three things:
+        A flag indicating whether it succeeded (the return value)
+
+        An object created from the successfully parsed portion of the
+        input (if it succeeded)
+
+        The remaining unparsed input (if it succeeded)
+
+Look over global_environment.c
+    This contains the initialization of the global environment.
+    I recommend starting at the end and working backwards.
+
+Look over initialize.txt
+    This lisp file implements many interpreter features, including
+    Logo procedure definition.
+
+Look over logoinitialize.txt
+
+Read main.c
+    This is a fairly straight forward setup and execution of everything above.

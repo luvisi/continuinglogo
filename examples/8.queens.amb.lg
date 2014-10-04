@@ -1,0 +1,26 @@
+
+to add.option :rest
+    localmake "new (amb 0 1 2 3 4 5 6 7)
+    foreach :rest [
+        if :new = ?   [fail] ; Same row.
+        if :new = ?+# [fail] ; Same diagonal.
+        if :new = ?-# [fail] ; Same diagonal.
+    ]
+    op fput :new :rest
+end
+
+to 8.queens
+    local [l.1 l.2 l.3 l.4 l.5 l.6 l.7 l.8]
+    catch "error [
+        make "l.1 add.option []
+        make "l.2 add.option :l.1
+        make "l.3 add.option :l.2
+        make "l.4 add.option :l.3
+        make "l.5 add.option :l.4
+        make "l.6 add.option :l.5
+        make "l.7 add.option :l.6
+        make "l.8 add.option :l.7
+        print reverse :l.8
+        fail
+    ]
+end

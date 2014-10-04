@@ -1,0 +1,48 @@
+
+to madlib :story
+print fill.in :story
+end
+
+to fill.in :story
+if emptyp :story [op []]
+if equalp first :story "* [
+  op se (punctuate fill.in (fput first bf :story [])
+                           first bf bf :story)
+        fill.in bf bf bf :story
+]
+if wordp first :story [op fput first :story fill.in bf :story]
+if not emptyp bf first :story [fill.blank first :story]
+op se thing first first :story fill.in bf :story
+end
+
+to fill.blank :blank
+pr se [tell me] article bf :blank
+make first :blank readlist
+end
+
+to vowelp :letter
+op memberp :letter [a e i o u]
+end
+
+to article :prompt
+if vowelp first first :prompt [op se "an :prompt]
+op se "a :prompt
+end
+
+to punctuate :stuff :punct
+if wordp :stuff [op word :stuff :punct]
+op se bl :stuff word last :stuff :punct
+end
+
+make "story1 [
+  At * [hour time of day] , [person person's name] was
+  * [motion way to move] ing down the street. [person] spotted a
+  [animal animal you fear] digging in a garbage can across the street.
+  [person] began to [motion] in the opposite direction but it was
+  too late.  The [animal] saw * [person] . It began to chase * [person] .
+  [person] tripped and fell.  The [animal] came up beside [person]
+  and began to wag its *[anatomy body part] .
+  [person] realized
+  there was nothing to fear. [person] reached out and patted the
+  * [animal] .]
+

@@ -1,0 +1,34 @@
+
+; The Y Combinator.
+make "y function [[f] 
+  invoke function [[x] invoke :f
+                              function [[n] invoke invoke :x :x :n]] 
+         function [[x] invoke :f
+                              function [[n] invoke invoke :x :x :n]]]
+
+; A function that, when passed to y above, yields a fibonacci function.
+make "f function [[f]
+  function [[n] if :n < 2 [1] [(invoke :f :n-1) + (invoke :f :n-2)]]]
+
+; Calling y(f) to create a fibonacci function.
+make "fib invoke :y :f
+
+for [i 1 10] [
+  ; Printing fibonacci(i) using the fib function.
+  print invoke :fib :i
+
+  ; Printing fibonacci(i) using the y combinator directly.
+  print ~
+    invoke ~
+      invoke ~
+        function [[f] 
+          invoke function [[x] invoke :f
+                                      function [[n] invoke invoke :x :x :n]] 
+                 function [[x] invoke :f
+                                      function [[n] invoke invoke :x :x :n]]] ~
+        function [[f]
+          function [[n] if :n < 2 [1] [(invoke :f :n-1) + (invoke :f :n-2)]]] ~
+      :i
+]
+
+bye

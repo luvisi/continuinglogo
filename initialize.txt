@@ -1,0 +1,1015 @@
+
+; So that scripts can behave differently when running in ContinuingLogo
+; versus Ucblogo
+(make 'continuinglogop 'true)
+(bury '(() (continuinglogop)))
+
+; Dummy functions to satisfy treeify.
+; These functions don't do anything because these forms are handled
+; by the interpreter.  They just let the treeifier treeify them correctly.
+(fset 'output (lambda (x)))
+(fset 'op (lambda (x)))
+(fset '.maybeoutput (lambda (x)))
+(fset 'internal_apply (lambda (proc args)))
+(fset 'internal_invoke (lambda (proc (args) 2)))
+
+; If passed a name, gensym will use internal_gensym to create an
+; uninterned name.
+; If not passed any arguments (the default), gensym will generate
+; an interned name starting with "g", like Ucblogo.
+(fset 'gensym
+  (lambda ((name '()))
+    (if (not (emptyp name))
+        (output (internal_gensym name)))
+    (if (not (namep 'gensym.number))
+        (make 'gensym.number 0))
+    (make 'gensym.number (inc gensym.number))
+    (word 'g gensym.number)))
+(bury '((gensym) (gensym.number)))
+
+(fset 'combine
+  (lambda (this those)
+    (if (wordp those)
+        (word this those)
+        (fput this those))))
+
+; A version of map that uses internal_invoke, so it cannot be passed some
+; of the more complex procedure types.  Needed to implement some of the
+; procedures used in high level invoke/apply.
+(fset 'low_level_map
+ ((lambda (f l) (eval
+   (list 'lambda (list f l)
+         (list 'if (list 'emptyp l)
+                   l
+                   (list 'combine (list 'internal_invoke f (list 'first l))
+                                  (list 'low_level_map f (list 'butfirst l)))))))
+   (gensym 'funcsym) (gensym 'listsym)))
+
+; High level map.  Takes all applicable types as arguments.
+; The gensyms are to avoid name captures.
+;(fset 'map
+; ((lambda (f l) (eval
+;   (list 'lambda (list f l)
+;         (list 'if (list 'emptyp l)
+;                   l
+;                   (list 'combine (list 'invoke f (list 'first l))
+;                                  (list 'map f (list 'butfirst l)))))))
+;   (gensym 'funcsym) (gensym 'listsym)))
+
+(fset 'map
+ ((lambda (f ls) (eval
+   (list 'lambda (list f (list ls) 2)
+         (list 'if (list 'emptyp (list 'car ls))
+                   (list 'car ls)
+                   (list 'combine (list 'apply f (list 'low_level_map 
+                                                       ''first
+                                                       ls))
+                                  (list 'apply
+                                        ''map
+                                        (list 'cons
+                                              f
+                                              (list 'low_level_map
+                                                     ''butfirst
+                                                     ls))))))))
+   (gensym 'funcsym) (gensym 'listssym)))
+
+(fset 'cadr (lambda (x) (car (cdr x))))
+(fset 'caddr (lambda (x) (car (cdr (cdr x)))))
+
+; The let macro creates temporary variables using a lambda application.
+; upstack_output causes calls to output/stop within the body to return
+; from the caller.
+;   (let ((foo bar)
+;         (baz quux))
+;     ...)
+; Becomes:
+;   ((lambda (foo baz)
+;      (upstack_output ...))
+;    bar
+;    quux)
+(fset 'let
+  (macro 'lisp_macro
+    (lambda (varlist (body))
+      ((lambda (vars vals)
+         (cons (cons 'lambda (cons vars
+                                   (cons (cons 'upstack_output body)
+                                         '())))
+               vals))
+       (low_level_map 'car varlist) (low_level_map 'cadr varlist)))))
+
+; The let* macro creates nested let's.
+;   (let* ((foo bar)
+;          (baz quux))
+;     ...)
+; Becomes:
+;   (let ((foo bar))
+;     (let* ((baz quux))
+;       ...))
+(fset 'let*
+  (macro 'lisp_macro
+    (lambda (varlist (body))
+      (if (emptyp varlist) (output `(begin ,@body)))
+      (if (emptyp (cdr varlist)) (output `(let ,varlist ,@body)))
+      `(let ,(list (car varlist)) (let* ,(cdr varlist) ,@body)))))
+        
+; The defun macro converts:
+;   (defun (foo bar) baz)
+; Into:
+;   (fset 'foo (lambda (bar) baz))
+(fset 'defun
+  (macro 'lisp_macro
+    (lambda (signature (body))
+      (if (consp signature)
+          (begin (local '(name vars))
+                 (make 'name (car signature))
+                 (make 'vars (cdr signature))
+                 (list 'fset (list 'quote name)
+                             (cons 'lambda (cons vars body))))
+          '()))))
+
+; Recursive equality test.
+(defun (equalp e1 e2)
+  (if (and (consp e1) (consp e2))
+      (if (equalp (car e1) (car e2))
+          (equalp (cdr e1) (cdr e2))
+          'false)
+      (eq e1 e2)))
+(copydef 'equal? 'equalp)
+(copydef '= 'equalp)
+(defun (notequalp e1 e2) (not (equalp e1 e2)))
+(copydef 'notequal? 'notequalp)
+(copydef '<> 'notequalp)
+
+; Array membership test - helper procedure for memberp
+(defun (array_memberp thing array index count)
+    (if (>= index count)
+        'false
+        (if (= (item index array) thing)
+            'true
+            (array_memberp thing array (inc index) count))))
+
+(defun (memberp i l)
+  (if (emptyp l)
+      'false
+      (if (arrayp l)
+          (array_memberp i l (first l) (+ (count l) (first l)))
+          (if (= (first l) i)
+              'true
+              (memberp i (butfirst l))))))
+(copydef 'member? 'memberp)
+
+(defun (member i l)
+  (if (emptyp l)
+      l
+      (if (= (first l) i)
+          l
+          (member i (butfirst l)))))
+
+(defun (listtoarray_helper i a l)
+  (if (emptyp l)
+      a
+      (begin (setitem i a (car l))
+             (listtoarray_helper (inc i) a (cdr l)))))
+
+(defun (listtoarray l (origin 1))
+  (local '(len a))
+  (make 'len (count l))
+  (make 'a (array len origin))
+  (listtoarray_helper origin a l))
+    
+(defun (arraytolist_helper array index limit)
+    (if (>= index limit)
+        '()
+        (cons (item index array)
+              (arraytolist_helper array (inc index) limit))))
+
+(defun (arraytolist a)
+  (local '(length origin))
+  (make 'length (count a))
+  (make 'origin (first a))
+  (arraytolist_helper a origin (+ origin length)))
+
+
+; Procedures for accessing the ?, ?1, ?2, etc. template variables.
+(defun (? (num '()))
+    (if (emptyp num)
+        ?
+        (thing (word '? num))))
+
+(defun (?1) ?1)
+(defun (?2) ?2)
+(defun (?3) ?3)
+(defun (?4) ?4)
+(defun (?5) ?5)
+(defun (?6) ?6)
+(defun (?7) ?7)
+(defun (?8) ?8)
+(defun (?9) ?9)
+(defun (?10) ?10)
+
+; Creates a list of ? slot variables for use in converting templates into
+; lambda's.
+;   (?slots 1 5) -> (?1 ?2 ?3 ?4 ?5)
+(defun (?slots start end)
+    (if (> start end)
+        '()
+        (cons (word '? start) (?slots (inc start) end))))
+
+; Tests a template to see if every member is a list.  If so,
+; it is a DEFINE syntax template, in which OUTPUT and STOP do
+; not return from the caller.
+(defun (all_lists l)
+    (if (emptyp l)
+        'true
+        (if (not (listp (car l)))
+            'false
+            (all_lists (cdr l)))))
+        
+; Quasiquote insanity.
+; Just skip this part.
+(defun (quasiquote-list-append arg level)
+    (list 'list (cons 'sentence
+                      (low_level_map
+                           (internal_function 
+                             (lambda (x)
+                               (quasiquote-helper x level)))
+                           arg))))
+
+(defun (quasiquote-helper arg level)
+    (if (not (consp arg))
+        (output (list 'list (list 'quote arg))))
+
+    (if (and (eq (car arg) 'unquote) (eq level 0))
+        (output (list 'list (cadr arg))))
+
+    (if (and (eq (car arg) 'unquote) (ne level 0))
+        (output (list 'list
+                      (list 'cons
+                            (list 'quote 'unquote)
+                            (quasiquote-helper (cadr arg) (- level 1))))))
+
+    (if (and (eq (car arg) 'unquote_splicing) (eq level 0))
+        (output (cadr arg)))
+
+    (if (and (eq (car arg) 'unquote_splicing) (ne level 0))
+        (output (list 'cons
+                      (list 'quote 'unquote)
+                      (quasiquote-helper (cadr arg) (- level 1)))))
+          
+    (if (eq (car arg) 'quasiquote)
+        (output (list 'list
+                      (list 'cons
+                            (list 'quote 'quasiquote)
+                            (quasiquote-helper (cadr arg) (+ level 1))))))
+
+    (quasiquote-list-append arg level))
+
+(fset 'quasiquote
+  (macro 'lisp_macro
+    (lambda (arg)
+        (list 'car (quasiquote-helper arg 0)))))
+
+
+
+
+
+; apply is the procedure that handles templates.
+
+; The if's are actually cascaded in this procedure.
+; The wonky indentation is to keep everything on the screen.
+; I don't use output's because of the calls to upstack_output
+; to allow templates to return from the caller.
+(fset 'apply
+ (let ((f (gensym 'funcsym)) (l (gensym 'listsym)))
+  (eval
+   `(lambda (,f ,l)
+      ; If the thing we're applying is not a template, just pass it
+      ; down to internal_apply to handle.
+      (if (not (consp ,f))
+          (internal_apply ,f ,l)
+
+      ; If every member of the template is a list, then this is a
+      ; DEFINE style template, where the first item is a list
+      ; of arguments and each member is a list representing a line.
+      ; We do not upstack_output here because an OUTPUT or STOP from
+      ; the template is only supposed to return from the template.
+      ; We construct and evaluate a lambda with the appropriate
+      ; arguments and body, formed by treeifying the lines of the template,
+      ; and apply the resulting procedure to the arguments using
+      ; internal_apply.
+      (if (all_lists ,f)
+          (internal_apply
+           (eval (cons 'lambda
+                       (cons (fixargs (car ,f))
+                             (treeify (apply 'sentence (cdr ,f))))))
+           ,l)
+
+      ; If the first item is a list, then we are in "named-slot" form.
+      ; The first item is treated as the argument list for the lambda
+      ; and the rest of the list is treated as a list of Logo statements
+      ; to treeify.
+      ; We need one upstack_output outside of the lambda to adjust the
+      ; frame of (apply) and another inside of the lambda to adjust the
+      ; frame of the lambda.
+      (if (listp (car ,f))
+          (upstack_output
+            (internal_apply
+             (eval (cons 'lambda
+                         (cons (fixargs (car ,f))
+                               (cons (cons 'upstack_output
+                                           (treeify (cdr ,f)))
+                                     '()))))
+             ,l))
+
+      ; If we have a cons, and the first item is not a list, then we are
+      ; dealing with "explicit-slot" or "question mark" form.  If we
+      ; are applying the template to just one value, then we call the
+      ; argument "?".
+      (if (= (count ,l) 1)
+          (upstack_output
+            (internal_apply
+             (eval (cons 'lambda
+                         (cons '(?)
+                               (cons (cons 'upstack_output
+                                           (treeify ,f))
+                                     '()))))
+             ,l))
+
+      ; We are applying the template to multiple values.
+      ; We create an argument named ?<number> for each argument.
+      ; If we have 3 arguments, we create ?1, ?2, and ?3.
+      (upstack_output
+        (internal_apply
+         (eval (cons 'lambda
+                     (cons (?slots 1 (count ,l))
+                           (cons (cons 'upstack_output
+                                       (treeify ,f))
+                                 '()))))
+         ,l))))))))))
+
+
+
+; Utility macro for defining macros.
+;   (defmacro (foo bar) baz)
+; Becomes:
+;   (fset 'foo (macro 'lisp_macro (lambda (bar) baz)))
+(fset 'defmacro
+  (macro 'lisp_macro
+    (lambda (signature (body))
+      (local '(name macroargs))
+      (make 'name (car signature))
+      (make 'macroargs (cdr signature))
+      `(fset ',name
+             (macro 'lisp_macro
+               (lambda ,macroargs ,@body))))))
+
+; to_proc is used by function to convert a template into a procedure.
+; function has the disadvantage of not knowing how many arguments are
+; going to be passed, unlike apply.  Therefore, it assumes that all
+; templates in "explicit-slot" or "question mark" form take only one
+; argument.
+(defun (to_proc e)
+    (if (not (consp e))
+        (output e))
+    (if (all_lists e)
+        (output (eval (cons 'lambda
+                            (cons (fixargs (car e))
+                                  (treeify (apply 'sentence (cdr e))))))))
+    (if (listp (car e))
+        (output (eval (cons 'lambda
+                            (cons (fixargs (car e))
+                                  (treeify (cdr e)))))))
+    (eval (cons 'lambda
+                (cons '(?) (treeify e)))))
+
+
+; internal_function only works on things the interpreter can apply
+; directly.  Templates are converted into procedures using to_proc.
+(fset 'function
+  (let ((argsym (gensym 'tmparg)))
+    (eval
+      `(lambda (,argsym) (internal_function (to_proc ,argsym))))))
+
+; call-with-current-continuation
+; The macro is here so that template arguments can be used
+; with callcc
+(fset 'callcc
+  (macro 'logo_macro
+    (lambda (f)
+      (local 'c)
+      (make 'c (gensym 'contsym))
+      `(internal_callcc
+         (lambda (,c)
+           (upstack_output (internal_invoke (to_proc (quote ,f)) ,c)))))))
+
+; invoke uses apply to get all the template application goodness.
+(fset 'invoke
+  (macro 'lisp_macro
+    (lambda (f (args) 2)
+      (list 'apply f (cons 'list args)))))
+
+; McCarthy's label operator.
+(fset 'label
+  (macro 'lisp_macro
+    (lambda (name func (body))
+      `(let ((,name ,func))
+        ,@body))))
+
+;(fset 'label
+;  (macro 'lisp_macro
+;    (lambda (name func (body))
+;      (list (cons 'lambda (cons (list name) body)) func))))
+
+; Only useful within initialize.txt
+(fset 'lispwhile
+  (macro 'lisp_macro
+    (lambda (cond (code))
+      (let ((loop (gensym 'tmploop)))
+        `(label ,loop 
+                (lambda ()
+                  (upstack_output
+                    (if ,cond
+                        (begin ,@code
+                               (invoke ,loop)))))
+                (invoke ,loop))))))
+
+; This macro only exists for things like (apply 'eval ...).
+; Normally the interpreter handles eval and this is never called.
+(fset 'eval (macro 'lisp_macro (lambda (e) (list 'eval e))))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;; BEGIN LOGO PROCEDURES ;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; run and runresult are Logo macros.
+; Because their arguments are already evaluated before they are called,
+; they also work correctly when called with apply or invoke.
+(fset 'run
+  (macro 'logo_macro
+    (lambda (l)
+      (list 'eval
+            (list 'cons
+                  ''begin
+                  (list 'treeify (list 'quote l)))))))
+
+(fset 'runresult
+  (macro 'logo_macro
+    (lambda (l)
+      (list 'eval
+            (list 'cons
+                  ''beginresult
+                  (list 'treeify (list 'quote l)))))))
+
+
+; Prompt for reading the definition of a procedure from the terminal.
+; "> "
+(make 'readline_prompt (word '> (char 32)))
+(bury '(() (readline_prompt)))
+
+; Read and return a list of LINE objects during procedure definition.
+; The definition ends when we read a line that starts with "end".
+(defun (readbody_helper procedure)
+  (local '(line parsed))
+  (make 'line (readline procedure readline_prompt))
+  (make 'parsed (line_parsed line))
+  (if (not (emptyp parsed))
+      (if (eq (car parsed) 'end)
+          (output '())))
+  (cons line (readbody_helper procedure)))
+
+; In the body of a Logo procedure, for each line we include a LINE
+; object followed by the treeified form of the line.
+; When the interpreter sees the LINE object, it sets the current line
+; for the purposes of error messages.
+(defun (treeify_line line)
+    (cons line (treeify (line_parsed line))))
+
+; To treeify the body of a procedure, we treeify each line and append
+; all of the results together.
+; Before treeifying each line, we use set_current_line to set the
+; current line, so that any errors during parsing will show the line
+; being parsed.
+(defun (treeify_body body)
+    (apply 'sentence
+           (map (lambda (line)
+                    (set_current_line line)
+                    (treeify_line line)) body)))
+
+; Read the body of a procedure.
+(defun (readbody procedure)
+    (readbody_helper procedure))
+
+; Takes the original body, a list of LINE's, and returns a new body that will
+; treeify the original body the first time it is called.
+; treeify_cache_generation is an object that is used to track when a
+; procedure changes arity.  Any time any procedure changes arity,
+; it is replaced by a new object, and every procedure must retreeify
+; its body the next time it runs.
+(defun (wrapbody body)
+  (local '(tree_sym generation))
+  (make 'tree_sym (gensym 'tmptree))
+  (make 'generation (gensym 'tmpgeneration))
+  (make tree_sym '())
+  (make generation '())
+  `(begin (if (or (emptyp ,tree_sym)
+                  (not (.eq treeify_cache_generation ,generation)))
+              ; If we haven't treeified the body yet, or if our cached
+              ; version is invalid because our cached generation is
+              ; different from the global generation, then we must
+              ; treeify the body and keep a record of the current
+              ; generation.
+              (begin (make ',tree_sym
+                           (cons 'beginnoresult (treeify_body ',body)))
+                     (make ',generation treeify_cache_generation)))
+          (eval ,tree_sym)))
+                  
+; When converting Logo definitions into lambdas, we need to remove
+; the :'s at the beginning of argument names.
+
+; Fix one name.
+(defun (fixargword argword)
+    (if (eq (first argword) ':)
+        (butfirst argword)
+        argword))
+
+; Fix one name in an argument that could be a name, an optional
+; argument, a rest argument, or a number setting the default arity.
+(defun (fixarg arg)
+    (if (wordp arg) (output (fixargword arg)))
+    (if (not (listp arg)) (output arg))
+    (if (emptyp (cdr arg))
+        (output (list (fixargword (car arg)))))
+    ; The default value for an optional argument must be wrapped
+    ; in a RUN so that it will be interpreted as Logo code and not
+    ; Lisp code.
+    (list (fixargword (car arg)) (list 'run (list 'quote (cdr arg)))))
+  
+; Fix all the args.
+(defun (fixargs args)
+  (map 'fixarg args))
+
+(make 'treeify_cache_generation (cons '() '()))
+(bury '(() (treeify_cache_generation)))
+
+; Called by process_file() in main.c, or by (logo) below,
+; with the "to" line of a procedure definition.
+(defun (create_logo_procedure line)
+  (local '(parsed name old_arity body wrapped new_procedure
+           new_arity))
+  (make 'parsed (line_parsed line))
+  (make 'name (cadr parsed))
+  ; old_arity is used later in deciding whether to invalidate
+  ; all the cached treeified procedures.
+  (make 'old_arity (if (procedurep name)
+                       (cadr (arity name))
+                       '()))
+  (make 'body (readbody name))
+  (make 'wrapped (wrapbody body))
+  (make 'new_procedure
+   (eval `(lambda ,(fixargs (cdr (cdr parsed)))
+                  ,wrapped)))
+  (make 'new_arity (cadr (arity new_procedure)))
+
+  ; Store the source code for TEXT, etc.
+  (source_set (cadr parsed)
+              (cons line body))
+  (fset (cadr parsed) new_procedure)
+
+  ; If the old arity is a number, and it is different from the new arity,
+  ; then we need to update the cache generation, which invalidates every
+  ; cached treeified procedure.
+  (if (and (numberp old_arity)
+           (<> new_arity old_arity))
+      (make 'treeify_cache_generation (cons '() '()))))
+
+; This is essentially the same as create_logo_procedure,
+; but it creates macros that started with ".macro" instead of
+; procedures that started with "to".
+; This makes logo macros, which have their arguments evaluated.
+(defun (create_logo_macro line)
+  (local '(parsed name old_arity body wrapped new_procedure new_arity))
+  (make 'parsed (line_parsed line))
+  (make 'name (cadr parsed))
+  (make 'old_arity (if (procedurep name)
+                       (cadr (arity name))
+                       '()))
+  (make 'body (readbody name))
+  (make 'wrapped (wrapbody body))
+
+  ; The macro needs to return (run (quote <output>)) so the output will
+  ; be interpreted as Logo code.
+  (make 'new_procedure
+   (eval `(macro 'logo_macro
+            (lambda ,(fixargs (cdr (cdr parsed)))
+                    `(run ',((lambda () ,wrapped)))))))
+
+  ; Fetch the new arity, store the source and the procedure,
+  ; and see if we need to invalidate the cached treeified procedures.
+  (make 'new_arity (cadr (arity new_procedure)))
+  (source_set (cadr parsed)
+              (cons line body))
+  (fset (cadr parsed) new_procedure)
+  (if (and (numberp old_arity)
+           (<> new_arity old_arity))
+      (make 'treeify_cache_generation (cons '() '()))))
+
+; Used by define and defmacro to create LINE objects with a null
+; raw slot.
+(defun (make_lines procname text)
+    (if (emptyp text) '()
+                      (cons (mk_line '() (car text) procname)
+                            (make_lines procname (cdr text)))))
+
+; DEFINE SYMBOL BODY
+; Makes SYMBOL be a procedure with body BODY.
+; BODY is a list of lists.
+; The first list contains arguments.
+; The rest of the body is one list per line.
+(defun (define procname text)
+    (local '(args stored_text lines body wrapped))
+    (make 'args (car text))
+    (make 'stored_text (cons (cons 'to (cons procname args)) (cdr text)))
+    (make 'lines (make_lines procname stored_text))
+    (make 'body (cdr lines))
+    (make 'wrapped (wrapbody body))
+    (source_set procname lines)
+    (fset procname
+          (eval `(lambda ,(fixargs args)
+                         ,wrapped))))
+
+; The same thing, but for macros.
+; Again, we must return (run (quote <output>)) so the output will be
+; interpreted as Logo code after the macro is run.
+(defun (.defmacro procname text)
+    (local '(args stored_text lines body wrapped))
+    (make 'args (car text))
+    (make 'stored_text (cons (cons '.macro (cons procname args)) (cdr text)))
+    (make 'lines (make_lines procname stored_text))
+    (make 'body (cdr lines))
+    (make 'wrapped (wrapbody body))
+    (source_set procname lines)
+    (fset procname
+          (eval `(macro 'logo_macro
+                   (lambda ,(fixargs args)
+                           `(run ',((lambda () ,wrapped))))))))
+
+(fset 'not_buriedp (lambda (x) (not (buriedp x))))
+
+; Used for generating the output of (contents).
+; All variables are uninterned symbols so that running this
+; procedure won't effect the output.
+; Arguments:
+;   l starts as the list of all names.
+;   procs is the list of procedures we have found that pass the test.
+;   names is the list of variables we have found that pass the test.
+;   plists is the list of property lists we have found that pass the test.
+;   test is the test that a name must pass for us to keep it.
+;   w is the word we are examining on this iteration.
+(fset 'contents_helper
+  (let ((l (gensym 'tmpl))
+        (procs (gensym 'tmpprocs))
+        (names (gensym 'tmpnames))
+        (plists (gensym 'tmpplists))
+        (test (gensym 'tmptest))
+        (w (gensym 'tmpw)))
+    (eval `(lambda (,l ,procs ,names ,plists ,test)
+               ; If l is empty, than we are done, and can output a 
+               ; contentslist, which is a list of three lists
+               ; containing procedures, variables, and property lists.
+               (if (emptyp ,l) (output (list ,procs ,names ,plists)))
+               (let ((,w (first ,l)))
+                 ; The same name could end up on multiple lists, so we
+                 ; need to check w separately as a procedure, a variable,
+                 ; and a property list.
+                 (if (definedp ,w)
+                     (if (invoke ,test ,w)
+                         (make ',procs (cons ,w ,procs))))
+                 (if (namep ,w)
+                     (if (invoke ,test (list '() (list ,w)))
+                         (make ',names (cons ,w ,names))))
+                 (if (plistp ,w)
+                     (if (invoke ,test (list '() '() (list ,w)))
+                         (make ',plists (cons ,w ,plists))))
+                 (contents_helper (cdr ,l) ,procs ,names ,plists ,test))))))
+
+(defun (contents) (contents_helper (oblist) '() '() '() 'not_buriedp))
+(defun (buried) (contents_helper (oblist) '() '() '() 'buriedp))
+(defun (traced) (contents_helper (oblist) '() '() '() 'tracedp))
+(defun (stepped) (contents_helper (oblist) '() '() '() 'steppedp))
+
+; Prompt used by (logo) below.
+(make 'default_logo_prompt (word 'Pause (char 32) '? (char 32)))
+
+(defun (logo_prompt)
+  (if (namep 'paused.procedure)
+      (word paused.procedure (char 32) '? (char 32))
+      default_logo_prompt))
+(bury '((logo_prompt) (default_logo_prompt)))
+
+; This is a Logo interpreter written in Logo.  It duplicates some of
+; the functionality from process_file() in main.c.
+; It is used during paused execution, and when LOAD'ing a file.
+; It is written in Logo so that it can call itself recursively during
+; a LOAD.  The C evaluator cannot be called recursively.
+;
+; The variables are uninterned symbols so that (logo) variables will not
+; complicate the user's CONTENTS during debugging.
+(fset 'logo
+  (let ((line (gensym 'tmpline))
+        (parsed (gensym 'parsed)))
+    (eval
+      `(lambda ()
+         (let ((,line (readline 'Toplevel (logo_prompt))))
+           (if (eofp ,line)
+             (begin)
+             (let ((,parsed (line_parsed ,line)))
+                 (if (and (consp ,parsed) (eq (car ,parsed) 'to))
+                     (create_logo_procedure ,line)
+                     (if (and (consp ,parsed) (eq (car ,parsed) '.macro))
+                         (create_logo_macro ,line)
+                         (run ,parsed)))
+                 (logo))))))))
+
+
+
+; A list of currently outstanding exception catchers.
+; Each one is a list whose first element is a symbol and whose
+; second element is a continuation.
+(make 'exception_catchers '())
+(bury '(() (exception_catchers)))
+
+; The last error thrown with THROW "ERROR ...
+(make 'error '())
+(bury '(() (error)))
+
+; Catch
+; We use upstack_output in both the body of catch, and in the
+; lambda, so the body of the catch can use OUTPUT/STOP to return
+; from the procedure that called catch.
+;
+; We need to capture a continuation and store it on the exception_catchers
+; list.  We rebind exception_catchers, so our catcher will automatically
+; go away when we leave the current scope.
+; The list is used as a stack, so deeper catchers will shadow less deep
+; catchers.
+; If the symbol is "ERROR, then we also rebind the error_catcher, which
+; is the continuation to call when we THROW "ERROR ...
+(fset 'catch
+  (let ((symbol (gensym 'tmpsymbol))
+        (body (gensym 'tmpbody))
+        (cont (gensym 'tmpcontinuation)))
+    (eval
+      `(lambda (,symbol ,body)
+        (upstack_output
+         ; Capture the continuation
+         (callcc (lambda (,cont)
+                  (upstack_output
+                   ; Rebind exception_catchers with the current catcher
+                   ; added.
+                   (let ((exception_catchers
+                          (cons (list ,symbol ,cont) exception_catchers)))
+                     ; Also rebind error_catcher if we are catching "ERROR
+                     (if (eq ,symbol 'error)
+                         (let ((error_catcher ,cont))
+                             (run ,body))
+                         (run ,body)))))))))))
+(bury '(() (error_catcher)))
+
+; Used by throw (below) to find the exception catcher we want to invoke.
+(defun (find_exception_handler symbol handlers)
+    (if (emptyp handlers) (output '()))
+    (if (eq (car (car handlers)) symbol) (output (car (cdr (car handlers)))))
+    (find_exception_handler symbol (cdr handlers)))
+        
+; Throw an exception.
+(defun (throw symbol (rest))
+    ; If we are throwing "ERROR, then we need to call raise_error so the
+    ; interpreter can handle it like a proper error.
+    (if (eq symbol 'error)
+        (apply 'raise_error rest)
+        (let ((handler (find_exception_handler symbol exception_catchers)))
+            (if (emptyp handler)
+                (raise_error `(Unable to find a catch tag for ,symbol)))
+                (apply handler rest))))
+    
+
+
+;;;;;;;;;;;;;;;;;;;;;
+;;;; BEGIN TESTS ;;;;
+;;;;;;;;;;;;;;;;;;;;;
+
+(defun (while_output)
+  (let ((l '(1 2 3 4 5 6 7 8 9)))
+    (print 'starting_while_output)
+    (lispwhile (not (emptyp l))
+        (print (car l))
+          (if (> (car l) 4)
+              (output (car l))
+              '())
+          (make 'l (cdr l)))
+    9999))
+
+(fset 'myadd (lambda (a b)
+               (if (eq a 0)
+                   b
+                   (myadd (dec a) (inc b)))))
+(fset 'testadd (lambda (x y) ((lambda () (myadd x y)))))
+(fset 'addfour (lambda (x y a b) (myadd (myadd x y) (myadd a b))))
+(fset 'inf (lambda () (inf2)))
+(fset 'inf2 (lambda () (inf)))
+
+(fset 'mkconst (lambda (x) (function (lambda () x))))
+
+(fset 'tstconst
+  (lambda ()
+    ((lambda (a) (myadd (invoke a) (invoke a)))
+     (mkconst 5))))
+
+
+(fset 'mkmultiplier
+  (lambda (multiplier)
+    (function (lambda (f c a)
+                (if (eq c 0)
+                    a
+                    (invoke f f (dec c) (myadd multiplier a)))))))
+(fset 'multiply
+  (lambda (x y)
+    ((lambda (mult) (invoke mult mult y 0))
+     (mkmultiplier x))))
+    
+(fset 'mkmultiplier2
+  (lambda (multiplier)
+    ((lambda (multiply helper)
+       (function multiply))
+     (lambda (x) (invoke helper x 0))
+     (lambda (counter accumulator)
+       (if (eq counter 0)
+           accumulator
+           (invoke helper (dec counter)
+                           (myadd multiplier accumulator)))))))
+
+(fset 'multiply2 (lambda (x y) (invoke (mkmultiplier2 x) y)))
+
+
+(fset 'fact (lambda (x)
+             (label f
+                    (lambda (x)
+                      (if (eq x 0)
+                          1
+                          (multiply2 x (invoke f (dec x)))))
+                    (invoke f x))))
+
+
+(fset 'even (lambda (x) (if (eq x 0) 'true (odd (dec x)))))
+(fset 'odd (lambda (x) (if (eq x 0) 'false (even (dec x)))))
+
+
+
+(fset 'countdown1
+  (lambda (x y)
+    (if (eq x y)
+        x
+        (begin
+          (print x)
+          (make 'x (dec x))
+          (countdown1 x y)))))
+
+
+(fset 'countdown2
+  (lambda (x y)
+    (print x)
+    (make 'x (dec x))
+    (if (eq x y)
+        y
+        (countdown2 x y))))
+
+(fset 'countdown3
+  (lambda (x y)
+    (lispwhile (not (eq x y))
+      (print x)
+      (make 'x (dec x)))
+    x))
+
+
+(fset 'callcc-count
+  (lambda (x rc)
+    (begin
+      (callcc (lambda (c) (make 'rc c)))
+      (if (eq x 0)
+          x
+          (begin (print x)
+                 (make 'x (dec x))
+                 (invoke rc))))))
+
+
+(fset 'callcc-count2
+  (lambda (x)
+    ((lambda (c)
+       (if (eq x 0)
+           x
+           (begin (print x)
+                  (make 'x (dec x))
+                  (invoke c c))))
+     (callcc (lambda (c) c)))))
+
+
+
+(make 'tests
+  '((5 5 const)
+    (((lambda (x) x) 5) 5 var)
+    ((inc 4) 5 inc)
+    ((dec 6) 5 dec)
+    ((inc (inc 3)) 5 incinc)
+    ((if 'true 5 10) 5 conditional_true)
+    ((if 'false 5 10) 10 conditional_false)
+    ((eq 3 3) true equal_true)
+    ((eq 3 4) false equal_false)
+    ((begin (print 3) 3) 3 print_3)
+    ((quote x) x quote)
+    ((myadd 0 5) 5 myadd0)
+    ((myadd 1 4) 5 myadd1)
+    ((myadd 2 3) 5 myadd)
+    (((lambda (x y) (myadd x y)) 2 3)
+     5 funciton_call)
+    ((addfour 1 2 3 4) 10 addfour)
+    ((myadd 5000 6) 5006 myadd_big_argument)
+    ((testadd 5000 6) 5006 testadd_big_argument)
+    (((lambda (a) (myadd (invoke a) (invoke a))) (mkconst 5))
+     10 mkconst)
+    ((tstconst) 10 tstconst)
+    ((invoke (mkconst 5)) 5 mkconst)
+    ((even 5000) true even 5000)
+    ((even 5001) false even 5001)
+    ((odd 5000) false odd 5000)
+    ((odd 5001) true odd 5001)
+    ((sentence '(1 2 3) '(9 8 7) '(5 6))
+     (1 2 3 9 8 7 5 6) sentence)
+    ((countdown1 13 10) 10 countdown1)
+    ((countdown2 23 20) 20 countdown2)
+    ((countdown3 33 30) 30 countdown3)
+    ((multiply 2 100) 200 multiply)
+    ((multiply2 2 100) 200 multiply2)
+    ((callcc (lambda (e) 3)) 3 callcc/fake)
+    ((callcc (lambda (e) (invoke e 1) 2 3)) 1 callcc/real)
+    ((callcc-count 3 'foo) 0 callcc/count)
+    ((callcc-count2 3) 0 callcc/count)
+    (((lambda (x) (eval 'x)) 5) 5 eval)
+    ((map 'inc '(2 3)) (3 4) map)
+    ((apply 'myadd '(2 3)) 5 apply)
+    ((map 'eval '((inc 2) (inc 3))) (3 4) mapeval)
+    ((fact 4) 24 fact)
+    (((lambda (x (r)) r) 1 2 3)
+     (2 3) rest)
+    ((let ((x 2) (y 3)) (myadd x y)) 5 let)
+    ((first 'abc) a first_sym)
+    ((first '(a b c)) a first_list)
+    ((butfirst 'abc) bc butfirst_sym)
+    ((butfirst '(a b c)) (b c) butfirst_list)
+    ((last 'abc) c last_sym)
+    ((last '(a b c)) c last_list)
+    ((butlast 'abc) ab butlast_sym)
+    ((butlast '(a b c)) (a b) butlast_list)
+;    (((lambda () 0 stop 3)) 0 stop1)
+;    (((lambda () 0 stop)) 0 stop2)
+;    (((lambda () 1 stop)) 1 stop3)
+;    (((lambda () 1 stop 3)) 1 stop4)
+))
+(bury '(() (tests)))
+
+
+(fset 'runtests
+  (lambda ()
+    (print 'starting_runtests)
+    (let ((tests tests)
+          (allpassed 'true))
+      (print 'inside_let)
+      (lispwhile (not (emptyp tests))
+        (print 'starting_loop)
+        (let* ((test (car tests))
+               (code (car test))
+               (expected (car (cdr test)))
+               (name (car (cdr (cdr test)))))
+            (print name)
+            (if (equalp (eval code) expected)
+                (print 'passed)
+                (begin (print 'failed)
+                       (make 'allpassed 'false))))
+
+         (make 'tests (cdr tests)))
+
+      (if allpassed
+          (print 'all_passed)
+          (print 'not_all_passed)))))
+  
+(fset 'tcount
+ (lambda ()
+   (make 'things '(1 2 3))
+   (let ((x 1)
+         (things '(1 2 3)))
+       (lispwhile (not (emptyp things))
+         (print x)
+         (print (car things))
+         (make 'things (cdr things))
+         (make 'x (inc x)))
+       (print 'done))))

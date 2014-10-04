@@ -1,0 +1,23 @@
+
+to test.position :new :rest
+    foreach :rest [
+        if :new=?   [op "false] ; Same row.
+        if :new=?+# [op "false] ; Same diagonal.
+        if :new=?-# [op "false] ; Same diagonal.
+    ]
+    op "true
+end
+
+to 8.queens
+    8.queens.helper 8 []
+end
+
+to 8.queens.helper :n :sofar
+    if :n = 0 [print reverse :sofar stop]
+    foreach [0 1 2 3 4 5 6 7] [
+        if test.position ? :sofar [
+            8.queens.helper :n-1 fput ? :sofar
+        ]
+    ]
+end
+

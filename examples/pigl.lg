@@ -1,0 +1,15 @@
+
+to vowelp :l
+  output memberp :l "aeiou
+end
+
+to pigword :w
+  if vowelp first :w [output word :w "ay]
+  output pigword word butfirst :w first :w
+end
+
+to pigl :s
+  if emptyp :s [output []]
+  output sentence pigword first :s pigl butfirst :s
+end
+

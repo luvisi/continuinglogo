@@ -1,0 +1,52 @@
+
+to sengen
+   print (sentence sen connect sen)
+end
+
+to sen
+  output (sentence nounphrase verbphrase)
+end
+
+to connects
+  output [but and [even though]]
+end
+
+to connect
+  output pick connects
+end
+
+to nounphrase
+  output (sentence adjective noun)
+end
+
+to noun
+  output pick nouns
+end
+
+to nouns
+  output [boys [dogs and cats] puppies [siamese fighting fish]
+  geese birds girls [guinea pigs] [mice and gerbils] worms teachers
+  donkeys clowns [baseball players]]
+end
+
+to verb
+  output pick verbs
+end
+
+to verbs
+  output [eat scare love hate [laugh at] trip bite]
+end
+
+to adjective
+  output pick adjectives
+end
+
+to adjectives
+  output [red fat [fuzzy wuzzy] peculiar jumping]
+end
+
+to verbphrase
+  output (sentence verb noun)
+end
+
+

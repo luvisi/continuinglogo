@@ -1,0 +1,9 @@
+to spin [:n 0]
+ if (remainder :n 1000) = 0 [
+    gc
+    (print nodes continuation_depth frame_depth)
+ ]
+ (spin :n+1)
+end
+
+
