@@ -110,7 +110,8 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending);
 void reroot(IC *ic, frame *f);
 
 /* Syntactic sugar for cons, car, and cdr. */
-#define cons(ic, car, cdr) mk_cons(ic, car, cdr)
+#define cons(ic, car, cdr) mk_cons(ic, car, cdr, ic->g_nil, ic->g_nil)
+#define unsafe_cons(ic, car, cdr) unsafe_mk_cons(ic, car, cdr, ic->g_nil, ic->g_nil)
 #define car(X) ((X)->u.cons.car)
 #define cdr(X) ((X)->u.cons.cdr)
 
@@ -151,7 +152,25 @@ void cleanup_name_table(GC *g);
    Two names are considered the same if they have the same SYMBOL,
    even if they are different NAME objects.
  */
-int name_eq(sexpr *a, sexpr *b);
+static inline int name_eq(sexpr *a, sexpr *b) {
+    struct symbol *syma, *symb;
+
+    if(a == NULL || b == NULL)
+        return 0;
+
+    if(a->t == NAME)
+        syma = a->u.name.symbol;
+    else
+        return 0;
+
+    if(b->t == NAME)
+        symb = b->u.name.symbol;
+    else
+        return 0;
+
+    return syma == symb;
+}
+
 
 /* Test whether a sexpr is nil. */
 #define is_nil(ic, e) ((e) == ((ic)->g_nil))
@@ -168,8 +187,7 @@ sexpr *to_number(IC *ic, sexpr *e);
    other garbage collected objects. 
  */
 
-void mark_cstring(GC *g, void *c,
-                  object_marker om, weak_pointer_registerer wpr);
+void mark_cstring(GC *g, void *c, object_marker om, weak_pointer_registerer);
 
 /* Creates a NULL terminated C string from the contents of the NAME name */
 char *get_cstring(IC *ic, sexpr *name);
@@ -222,7 +240,7 @@ struct symbol {
 /* When a procedure is stepped, the interpreter will print every line
    before executing it and wait for the user to press a key.
    It is meaningless for variables or property lists to be stepped,
-   but the flags exist because severla functions accept flags in threes
+   but the flags exist because several functions accept flags in threes
    and it is easier to create these flags and do nothing with them than
    to write the special case code necessary to handle stepping separately
    from tracing and burying.
@@ -248,7 +266,10 @@ sexpr *array(IC *ic, int length, int origin);
 /* Converts a list into an ARRAY.  Used by the reader to process
    { ... } notation. */
 sexpr *list_to_array(IC *ic, sexpr *l, int origin);
-int numberp(IC *ic, sexpr *e);
 
+
+/* Returns 1 if e is a number of a name that can be turned into a number.
+   Returns 0 otherwise. */
+int numberp(IC *ic, sexpr *e);
 
 #endif

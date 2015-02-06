@@ -79,7 +79,9 @@ static void put_back_char(reader *r, char ch) {
 }
 
 
-/* Add a character to the token we are building up in buf. */
+/* Add a character to the token we are building up in buf.
+   Length check must leave room for the null that will be
+   added at the end. */
 static void add_to_buf(reader *r, char ch) {
     if(r->bufused < TOKEN_MAXLEN - 1)
         r->buf[r->bufused++] = ch; 
@@ -163,6 +165,13 @@ sexpr *readobj(IC *ic) {
   reader *r = ic->r;
   char *token;
 
+  /* These are used by strtod().  Number is the return value, and
+     unparsed is set to the portion of the string not parsed.
+     If it is not pointing at the terminating '\0' when we are done, then
+     we failed to get a number. */
+  double number;
+  char *unparsed;
+
   token = gettoken(r);
   if(token == NULL) return ic->eof;
   if(!strcmp(token, "(")) return readlist(ic);
@@ -193,10 +202,16 @@ sexpr *readobj(IC *ic) {
     return ret;
   }
 
-  /* Very primitive number recognizer.  The one in logoreader.c is much
-     more complete. */
-  if(token[strspn(token, "0123456789.")] == '\0')
-    return mk_number(ic, atof(token));
+
+  /* Check to see if it's a valid number. */
+  if(strcasecmp(token, "inf") &&
+     strcasecmp(token, "infinity") &&
+     strcasecmp(token, "nan")) {
+    number = strtod(token, &unparsed);
+    if(unparsed != token && *unparsed == '\0')
+      return mk_number(ic, number);
+  }
+
   return intern(ic, token);
 }
 
@@ -223,8 +238,7 @@ static sexpr *readlist(IC *ic) {
 }
 
 /* Readers have no garbage collected members to mark. */
-static void mark_reader(GC *g, void *o,
-                        object_marker om, weak_pointer_registerer wpr) { }
+static void mark_reader(GC *g, void *o, object_marker om, weak_pointer_registerer wpr) {}
 
 reader *mk_reader(IC *ic) {
   reader *r = ic_xmalloc(ic, sizeof(reader), mark_reader);

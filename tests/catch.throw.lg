@@ -1,0 +1,56 @@
+
+to catch_output
+  catch "foo [output 3]
+  [output 5]
+end
+
+to catch_throw
+  catch "foo [throw "foo output 5]
+  output 3
+end
+
+to catch_throw_value
+  output catch "foo [(throw "foo 3) output 5]
+end
+
+to catch_throw_error
+  catch "error [ throw "error ]
+  output 3
+end
+
+to catch_throw_error_value
+  catch "error [ (throw "error 3) ]
+  ifelse namep "continuinglogop [
+    op first error
+  ] [
+    op first bf error 
+  ]
+end
+
+make "tests [
+  [[catch_output] [] 3]
+  [[catch_throw] [] 3]
+  [[catch_throw_value] [] 3]
+  [[catch_throw_error] [] 3]
+  [[catch_throw_error_value] [] 3]
+]
+
+to run_tests
+  foreach :tests [
+    make "commands first ?
+    make "args first bf ?
+    make "expected_result first bf bf ?
+
+    type :commands
+    type "| |
+    ifelse (apply :commands :args) = :expected_result [
+      print "succeeded
+    ] [
+      print "failed
+    ]
+  ]
+end
+
+run_tests
+bye
+

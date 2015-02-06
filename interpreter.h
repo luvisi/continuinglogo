@@ -35,6 +35,7 @@
 #define OUTPUT_MASK 12 /* Bit mask used to manipulate VALUE_OK and NO_VALUE_OK
                           while preserving OUTPUT_OK and STOP_OK */
 
+#define NAME_TABLE_HASH_BUCKETS 4096
 
 struct interpreter {
     GC *g; /* Garbage Collector context */
@@ -53,7 +54,7 @@ struct interpreter {
     struct continuation *continuation; /* The continuation to apply to the
                                           next computed value */
 
-    unsigned int allowed_results; /* Bitfield.  See above. */
+    unsigned int allowed_results;    /* Bitfield.  See above. */
     struct sexpr *output_error_info; /* Information constantly kept up to date
                                         so we can produce accurate error
                                         error messages when allowed_results
@@ -90,14 +91,18 @@ struct interpreter {
                                         error messages in using eprintf
                                         and eprint_sexpr */
 
-    struct sexpr *name_list;         /* The global list of interned names */
+    /* The global table of interned names.  Each entry is a list. */
+    struct sexpr *name_table[NAME_TABLE_HASH_BUCKETS];
+
     struct sexpr *n_empty;           /* The empty word */
 
 
     /* Other names that need to be accessed from C */
     struct sexpr *n_lambda;
+    struct sexpr *n_callcc;
     struct sexpr *n_internal_callcc;
     struct sexpr *n_quote;
+    struct sexpr *n_thingquote;
     struct sexpr *n_if;
     struct sexpr *n_ifelse;
     struct sexpr *n_begin;
@@ -111,6 +116,7 @@ struct interpreter {
     struct sexpr *n_rest;
     struct sexpr *n_append;
     struct sexpr *n_car;
+    struct sexpr *n_invoke;
     struct sexpr *n_internal_invoke;
     struct sexpr *n_internal_apply;
     struct sexpr *n_output;
@@ -152,8 +158,22 @@ struct interpreter {
     struct sexpr *n_pause;
     struct sexpr *n_pause_caller;
     struct sexpr *n_caseignoredp;
+    struct sexpr *n_treeify;
     struct sexpr *n_treeify_cache_generation;
     struct sexpr *n_logoversion;
+    struct sexpr *n_create_logo_procedure;
+    struct sexpr *n_create_logo_macro;
+    struct sexpr *n_template_number;
+    struct sexpr *n_q1;
+    struct sexpr *n_q2;
+    struct sexpr *n_q3;
+    struct sexpr *n_q4;
+    struct sexpr *n_q5;
+    struct sexpr *n_q6;
+    struct sexpr *n_q7;
+    struct sexpr *n_q8;
+    struct sexpr *n_q9;
+    struct sexpr *n_q10;
 };
 typedef struct interpreter IC; /* Interpreter Context */
 
@@ -162,8 +182,10 @@ typedef struct interpreter IC; /* Interpreter Context */
    values. */
 #define FOR_INTERPRETER_NAMES(MACRO) \
     MACRO(lambda) \
+    MACRO(callcc) \
     MACRO(internal_callcc) \
     MACRO(quote) \
+    MACRO(thingquote) \
     MACRO(if) \
     MACRO(ifelse) \
     MACRO(begin) \
@@ -177,6 +199,7 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(rest) \
     MACRO(append) \
     MACRO(car) \
+    MACRO(invoke) \
     MACRO(internal_invoke) \
     MACRO(internal_apply) \
     MACRO(output) \
@@ -218,8 +241,22 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(pause) \
     MACRO(pause_caller) \
     MACRO(caseignoredp) \
+    MACRO(treeify) \
     MACRO(treeify_cache_generation) \
-    MACRO(logoversion)
+    MACRO(logoversion) \
+    MACRO(create_logo_procedure) \
+    MACRO(create_logo_macro) \
+    MACRO(template_number) \
+    MACRO(q1) \
+    MACRO(q2) \
+    MACRO(q3) \
+    MACRO(q4) \
+    MACRO(q5) \
+    MACRO(q6) \
+    MACRO(q7) \
+    MACRO(q8) \
+    MACRO(q9) \
+    MACRO(q10)
 
 /* Macro to run a macro on all of the interpreter fields.
    used in interpreter.c to mark the root set during garbage
@@ -244,11 +281,12 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(dribble) \
     MACRO(dribble_name) \
     MACRO(error_byte_buffer) \
-    MACRO(name_list) \
     MACRO(n_empty) \
     MACRO(n_lambda) \
+    MACRO(n_callcc) \
     MACRO(n_internal_callcc) \
     MACRO(n_quote) \
+    MACRO(n_thingquote) \
     MACRO(n_if) \
     MACRO(n_ifelse) \
     MACRO(n_begin) \
@@ -262,6 +300,7 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(n_rest) \
     MACRO(n_append) \
     MACRO(n_car) \
+    MACRO(n_invoke) \
     MACRO(n_internal_invoke) \
     MACRO(n_internal_apply) \
     MACRO(n_output) \
@@ -303,8 +342,22 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(n_pause) \
     MACRO(n_pause_caller) \
     MACRO(n_caseignoredp) \
+    MACRO(n_treeify) \
     MACRO(n_treeify_cache_generation) \
-    MACRO(n_logoversion)
+    MACRO(n_logoversion) \
+    MACRO(n_create_logo_procedure) \
+    MACRO(n_create_logo_macro) \
+    MACRO(n_template_number) \
+    MACRO(n_q1) \
+    MACRO(n_q2) \
+    MACRO(n_q3) \
+    MACRO(n_q4) \
+    MACRO(n_q5) \
+    MACRO(n_q6) \
+    MACRO(n_q7) \
+    MACRO(n_q8) \
+    MACRO(n_q9) \
+    MACRO(n_q10)
 
 
 /* Makes an interpreter.  gc_delay is how many allocations to perform

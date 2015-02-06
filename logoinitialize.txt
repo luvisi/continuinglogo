@@ -1,9 +1,13 @@
 
 to pick :thing
-  output item 1 + random count :thing :thing
+  output item ((ifelse arrayp :thing [first :thing] [1]) + ~
+               random count :thing) ~
+              :thing
 end
 bury "pick
 
+; A word is the name of a property list if it has a non-empty
+; property list.
 to plistp :thing
   if wordp :thing [output (plist :thing) <> []]
   output "false
@@ -13,6 +17,16 @@ bury "plistp
 copydef "plist? "plistp
 bury "plist?
 
+; save_source_helper prints only the LINE objects in :body.
+; Typical uses will include:
+;   :printer is TYPE and :getter is LINE_RAW for printing the
+;   raw version of a procedure.  This will happen when the procedure
+;   was defined using TO.
+;
+;   :printer is PRINT and :getter is LINE_PARSED for printing the
+;   parsed version of a procedure.  This will happen when the procedure
+;   was defined using DEFINE.
+;
 to save_source_helper :printer :getter :body
   if :body = [] [stop]
   if linep first :body [invoke :printer invoke :getter first :body]
@@ -20,6 +34,8 @@ to save_source_helper :printer :getter :body
 end
 bury "save_source_helper
 
+; These add colons to variables when generating the TO line while
+; saving a procedure that was defined using DEFINE.
 to save_source.maybe.addcolon :arg
     if wordp :arg [
         if or emptyp :arg (first :arg) <> ": [op word ": :arg]
@@ -36,10 +52,18 @@ end
 bury "save_source.addcolons
 
 
+; This prints out the source for a procedure.
+; If the procedure was defined using TO, then we can just
+; print the raw version of each line, as originally entered.
+;
+; If the procedure was defined using DEFINE, then we need to
+; do some extra work to generate the TO line, and we also need to
+; print out the body with FULLPRINTP set to TRUE.
 to save_source :proc
   localmake "source symbol_source :proc
 
   if :source = [] [
+    ; We have no source to print.  Generate an empty definition.
     print (list "to :proc)
     print "end
     print "
@@ -47,11 +71,16 @@ to save_source :proc
   ]
 
   if (line_raw first :source) = [] [
+      ; We have no raw input, meaning the procedure was probably
+      ; created with DEFINE.  We need to create a new TO line and
+      ; print the parsed version of each LINE object in the definition.
       localmake "fullprintp "true
       localmake "first_line line_parsed first :source
       print (se "to :proc save_source.addcolons bf bf :first_line)
       save_source_helper "print "line_parsed bf :source
   ] [
+      ; We have raw input, meaning the procedure was probably defined
+      ; normally with TO.  We type out the raw input.
       localmake "fullprintp "false
       save_source_helper "type "line_raw :source
   ]
@@ -87,6 +116,7 @@ to save_name :name
 end
 bury "save_name
   
+; Print Out Names
 to pon :names
   if :names = [] [stop]
   if wordp :names [save_name :names stop]
@@ -95,6 +125,7 @@ to pon :names
 end
 bury "pon
 
+; Print Out Property Lists
 to popl :names
   if :names = [] [stop]
   if wordp :names [save_plist :names stop]
@@ -103,6 +134,14 @@ to popl :names
 end
 bury "popl
 
+; Prints out Logo code to recreate the things in :contentslist.
+; If :contentslist is a word, it is treated as the name of a procedure.
+; If :contentslist is a list of words, it is treated as a list of
+; procedure names.
+; If :contents is a list of up to three lists, they are treated as:
+;    a list of procedure names.
+;    a list of variable names.
+;    a list of property list names.
 to printout :contentslist
   if :contentslist = [] [stop]
   if wordp :contentslist [save_source :contentslist stop]
@@ -123,27 +162,43 @@ to printout :contentslist
 end
 bury "printout
 
+copydef "po "printout
+bury "po
+
+; Prints out just the title line of a procedure.
 to pot.print.title :proc
   localmake "source symbol_source :proc
 
+  ; If we have no source code, we generate a new title line.
   if :source = [] [
     print (list "to :proc)
-    print "end
-    print "
     stop
   ]
 
   if (line_raw first :source) = [] [
+      ; If we have no raw source, we generate it from the parsed version.
+      ; This happens with procedures created with DEFINE.
       localmake "fullprintp "true
       localmake "first_line line_parsed first :source
       print (se "to :proc save_source.addcolons bf bf :first_line)
   ] [
+      ; If we have a raw title line, then we just print it out.
+      ; This happens whith procedures created with TO.
       localmake "fullprintp "false
       type line_raw first :source
   ]
 end
 bury "pot.print.title
 
+; Print Out Titles
+; Like PRINTOUT, but only prints the title TO line for procedures.
+; If :contentslist is a word, it is treated as the name of a procedure.
+; If :contentslist is a list of words, it is treated as a list of
+; procedure names.
+; If :contents is a list of up to three lists, they are treated as:
+;    a list of procedure names.
+;    a list of variable names.
+;    a list of property list names.
 to pot :contentslist
   if :contentslist = [] [stop]
   if wordp :contentslist [pot.print.title :contentslist stop]
@@ -164,8 +219,6 @@ to pot :contentslist
 end
 bury "pot
 
-copydef "po "printout
-bury "po
 
 .macro savecontents :file :contents
   output (list "openwrite word "" :file          ~
@@ -230,16 +283,19 @@ end
 bury "continue
 
 .macro c [:args]
-    output sentence "continue map "quote_if_name :args
+    output (sentence "\( "continue map "quote_if_name :args "\) )
 end
 bury "c
 
 .macro while :while.cond :while.instr
-if not run :while.cond [op []]
-op se :while.instr (list "while :while.cond :while.instr)
+  op (list "if "run quoted :while.cond ~
+               (list "run quoted :while.instr ~
+                     "while quoted :while.cond quoted :while.instr))
 end
 bury "while
 
+; Reads the entire input file, until an EOF, using READLIST on each
+; line.  Returns a list of lists, with one list for each line.
 to read_lines_readlist
     localmake "line readlist
     if :line = " [output []]
@@ -247,6 +303,8 @@ to read_lines_readlist
 end
 bury "read_lines_readlist
 
+; Reads the entire input file, until an EOF, using READWORD on each line.
+; Returns a list of words, with one word for each line.
 to read_lines_readword
     localmake "line readword
     if :line = [] [output []]
@@ -254,6 +312,12 @@ to read_lines_readword
 end
 bury "read_lines_readword
 
+; Runs :command and returns the result.
+; By default, the return value is a list of lists, with each
+; line read by READLIST.
+; If :wordflag is provided, regardless of value, then the result
+; is a list of words, with one word for each line in the output
+; of :command.
 to shell :command [:wordflag]
     localmake "oldreader reader
     local "result
@@ -270,11 +334,18 @@ to shell :command [:wordflag]
 end
 bury "shell
 
+; Set the editor to be used when editing procedures, variables, or property
+; lists with EDIT.
 to seteditor :e
     make "edit.editor :e
 end
 bury "seteditor
 
+
+; Get the editor to be used when editing procedures, variables, or property
+; lists with EDIT.
+; :edit.editor is used if it is set, then we try the VISUAL and EDITOR
+; environment variables, and finally we default to vi.
 to edit.editor
     if namep "edit.editor [output :edit.editor]
     localmake "editor getenv "VISUAL
@@ -285,6 +356,10 @@ to edit.editor
 end
 bury [[edit.editor] [edit.editor]]
 
+; Edit the procedures, variables, and property lists in
+; :contentslist.
+; This is done by saving the definitions to a temp file, editing the
+; file, and then loading the file.
 to edit :contentslist [:tmp "logo.temp.txt]
     savecontents :tmp :contentslist
     localmake "status system (list edit.editor :tmp)
@@ -293,6 +368,9 @@ to edit :contentslist [:tmp "logo.temp.txt]
 end
 bury "edit
 
+; Edit an existing file, and then reload it.
+; This is useful for editing, then testing, then editing, then testing
+; a set of definitions.
 to editfile :file
     localmake "status system (list edit.editor :file)
     if :status <> 0 [throw "error [edit error]]
@@ -303,6 +381,9 @@ bury "editfile
 copydef "ed "edit
 bury "ed
 
+; Pull out the definition of :proc in a format suitable for
+; DEFINE, that is, a list of parsed lines whose first element
+; is a list of arguments.
 to text :proc
     localmake "source symbol_source :proc
     localmake "args bf bf line_parsed first :source ; Skip "to <name>"
@@ -311,6 +392,9 @@ to text :proc
 end
 bury "text
 
+; Return the raw text of a procedure.  If it was defined with
+; TO, then this is the exact text used to define the procedure.
+; Otherwise, returns parsed versions of the lines.
 to rawtext :proc
     localmake "source symbol_source :proc
     if (line_raw first :source) = [] [
@@ -321,26 +405,32 @@ to rawtext :proc
 end
 bury "rawtext
     
+; Returns all unburied procedures.
 to procedures
     op first contents
 end
 bury "procedures
 
+; Returns all primitives.  This includes procedures defined in
+; lisp.
 to primitives
     op filter "primitivep oblist
 end
 bury "primitives
 
+; Returns all unburied variable names in a contents list.
 to names
     op (list [] first bf contents)
 end
 bury "names
 
+; Returns all unburied property list names in a contents list.
 to plists
     op (list [] [] first bf bf contents)
 end
 bury "plists
 
+; Returns the current repetition count for the innermost REPEAT or FOREVER.
 to repcount
   op :repcount
 end
@@ -374,21 +464,25 @@ bury "forever.helper
 end
 bury "forever
 
+; Erase all unburied procedures, variables names, and property lists.
 to erall
   erase contents
 end
 bury "erall
 
+; Erase all unburied procedures.
 to erps
   erase procedures
 end
 bury "erps
 
+; Erase all unburied variable names.
 to erns
   erase names
 end
 bury "erns
 
+; Erase all unburied variable property lists.
 to erpls
   erase plists
 end
@@ -414,6 +508,15 @@ bury "butfirsts
 copydef "bfs "butfirsts
 bury "bfs
 
+; McCarthy's Ambiguous Operator.
+; Returns the first argument.
+; If FAIL is called later in the program, then control returns
+; to this procedure, and it returns the next argument.
+; If it is out of arguments, then it fails, causing any previous
+; instance of AMB to resume.
+; If there are no previous instances left to resume, then we throw
+; an error.
+
 make "amb.continuation [(throw "error "|amb: Out of alternatives|)]
 to amb [:values]
     output callcc [[return]
@@ -435,11 +538,12 @@ to fail
 end
 bury "fail
 
-to #
-  op :template.number
-end
-bury "#
+;to #
+;  op :template.number
+;end
+;bury "#
 
+; Ignore case by default.
 make "caseignoredp "true
 bury [[] [caseignoredp]]
 

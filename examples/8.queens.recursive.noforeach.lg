@@ -1,0 +1,31 @@
+
+to test.position :new :rest :position
+    if :rest = [] [op "true]
+    local "first
+    make "first first :rest
+    if :new=:first           [op "false] ; Same row.
+    if :new=:first+:position [op "false] ; Same diagonal.
+    if :new=:first-:position [op "false] ; Same diagonal.
+    op test.position :new bf :rest :position+1
+end
+
+to 8.queens
+    8.queens.helper 8 []
+end
+
+to 8.queens.iterator :i
+    if :i = 8 [stop]
+    if test.position :i :sofar 1 [
+        8.queens.helper :n-1 fput :i :sofar
+    ]
+    8.queens.iterator :i+1
+end
+    
+
+to 8.queens.helper :n :sofar
+    if :n = 0 [print reverse :sofar stop]
+    8.queens.iterator 0
+end
+
+8.queens
+bye

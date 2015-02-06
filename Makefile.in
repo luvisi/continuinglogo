@@ -15,11 +15,12 @@ STRUCTURES=structures.c structures.h
 PROGRAM=clogo
 CC=gcc
 OPTFLAGS=-O3 -fno-align-functions
-#PROFILE_FLAGS=-pg
+#PROFILE_FLAGS=-pg -static-libgcc -lc_p
+#COVERAGE_FLAGS=--coverage
 DIRFLAGS=-DLIBRARYDIR=\"$(librarydir)\"
-CFLAGS=-g -Wall $(OPTFLAGS) $(PROFILE_FLAGS) $(DIRFLAGS)
+CFLAGS=-g -Wall -fPIE $(OPTFLAGS) $(PROFILE_FLAGS) $(COVERAGE_FLAGS) $(DIRFLAGS)
 
-LDFLAGS=-lm $(PROFILE_FLAGS)
+LDFLAGS=-lm -pie $(PROFILE_FLAGS) $(COVERAGE_FLAGS)
 
 all: $(PROGRAM)
 
@@ -40,7 +41,8 @@ install: all
 	install initialize.txt logoinitialize.txt ucblogolib.txt $(librarydir)
 
 clean:
-	rm -f $(STRUCTURES) $(OBJECTS) $(PROGRAM) logo.temp.txt gmon.out *~
+	rm -f $(STRUCTURES) $(OBJECTS) $(PROGRAM) logo.temp.txt gmon.out \
+              *.gcov *.gcda *.gcno *~
 
 distclean: clean
 	rm -rf config.log config.status Makefile config.h autom4te.cache \

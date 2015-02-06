@@ -1,0 +1,4 @@
+
+print [Starting load1]
+load "|tests/load2.lg|
+print [Ending load1]

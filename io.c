@@ -440,6 +440,7 @@ void openupdate(IC *ic, sexpr *path) { lopen(ic, path, "a+"); }
 void lclose(IC *ic, sexpr *path) {
     /* We use a pointer to a pointer to make it easier to delete
        the item from the linked list. */
+    sexpr *linking_object = NULL;
     sexpr **l = &ic->open_files;
 
     /* If the destination we are closing is the current input or output
@@ -462,7 +463,7 @@ void lclose(IC *ic, sexpr *path) {
                 eprintf(ic, ": %s", strerror(errno));
                 throw_error(ic, ic->continuation->line);
             }
-            STORE(ic->g, NULL, *l, cdr(*l));
+            STORE(ic->g, linking_object, *l, cdr(*l));
             return;
         }
         if(car(car(*l))->t == CONS &&
@@ -485,9 +486,10 @@ void lclose(IC *ic, sexpr *path) {
                   name->u.name.symbol->value,
                   word_from_byte_buffer(ic, cdr(car(*l))->u.byte_bufferp.byte_buffer));
             /* Remove the pair from the open files list. */
-            STORE(ic->g, NULL, *l, cdr(*l));
+            STORE(ic->g, linking_object, *l, cdr(*l));
             return;
         }
+        linking_object = *l;
         l = &(cdr(*l));
     }
 
@@ -498,7 +500,7 @@ void lclose(IC *ic, sexpr *path) {
 
 
 /* Test for end of file on input.  This works by reading ahead a character,
-   so it can hand when called with the input set to the terminal.
+   so it can hang when called with the input set to the terminal.
  */
 sexpr *leofp(IC *ic) {
     FILE *fp = ic->input->u.filep.file;
@@ -689,9 +691,7 @@ sexpr *filep(IC *ic, sexpr *name) {
    The end is marked by a NULL pointer.
  */
 void mark_string_array(GC *g,
-                       void *c,
-                       object_marker om,
-                       weak_pointer_registerer wpr) {
+                       void *c, object_marker om, weak_pointer_registerer wpr) {
   char **a  = (char **) c;
   if(a != NULL) {
       while(*a != NULL) {
@@ -785,7 +785,7 @@ void openshell(IC *ic, sexpr *name, sexpr *args) {
         throw_error(ic, ic->continuation->line);
     }
 
-    /* Creaet a child process. */
+    /* Create a child process. */
     if(fork() == 0) {
         /* Child */
 

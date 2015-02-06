@@ -1,0 +1,161 @@
+
+to make_my_invoke
+  localmake "f (gensym "f)
+  localmake "a (gensym "a)
+  fset "my_invoke eval `[
+    lambda [,:f [,:a] 2]
+      [upstack_output
+        [apply ,:f ,:a]]]
+end
+
+;to make_my_invoke
+;  localmake "f (gensym "f)
+;  localmake "a (gensym "a)
+;  define "my_invoke `[
+;    [,:f [,:a] 2]
+;    [.maybeoutput upstack_output apply thingquote ,:f thingquote ,:a]]
+;end
+
+make_my_invoke
+
+to make_my_apply
+  localmake "f (gensym "f)
+  localmake "a (gensym "a)
+  define "my_apply `[
+    [,:f ,:a]
+    [.maybeoutput upstack_output apply thingquote ,:f thingquote ,:a]]
+end
+
+make_my_apply
+
+to make_my_while
+  localmake "cond (gensym "cond)
+  localmake "instr (gensym "instr)
+  define "my_while `[
+    [,:cond ,:instr]
+    [.maybeoutput
+      upstack_output
+        if run thingquote ,:cond [
+          run thingquote ,:instr
+          my_while thingquote ,:cond thingquote ,:instr]]]
+end
+
+make_my_while
+
+
+
+; my invoke tests
+; OUTPUT inside of an explicit slot template returns from the calling
+; procedure
+to one_explicit_slot_test
+  my_invoke [output ?+1] 2
+end
+
+; OUTPUT inside of an explicit slot template returns from the calling
+; procedure
+to two_explicit_slots_test
+  (my_invoke [output ?1+?2] 2 1)
+end
+
+; OUTPUT inside of a named slot template returns from the calling
+; procedure
+to named_slot_test
+  (my_invoke [[x y] output :x+:y] 2 1)
+end
+
+; OUTPUT inside of a procedure text template only returns from the
+; template, NOT from the calling procedure.
+to procedure_text_test
+  localmake "z (my_invoke [[x y] [output :x+:y]] 1 4)
+  output :z-2
+end
+
+
+
+
+
+; my_apply tests
+; OUTPUT inside of an explicit slot template returns from the calling
+; procedure
+to one_explicit_slot_test_apply
+  my_apply [output ?+1] [2]
+end
+
+; OUTPUT inside of an explicit slot template returns from the calling
+; procedure
+to two_explicit_slots_test_apply
+  my_apply [output ?1+?2] [2 1]
+end
+
+; OUTPUT inside of a named slot template returns from the calling
+; procedure
+to named_slot_test_apply
+  my_apply [[x y] output :x+:y] [2 1]
+end
+
+; OUTPUT inside of a procedure text template only returns from the
+; template, NOT from the calling procedure.
+to procedure_text_test_apply
+  localmake "z my_apply [[x y] [output :x+:y]] [1 4]
+  output :z-2
+end
+
+
+to while_op_cond
+  my_while [op 3] [op 5]
+end
+
+to while_op_instr
+  my_while ["true] [op 3]
+end
+
+to while_false
+  my_while ["false] [op 5]
+  op 3
+end
+
+to while_count
+  localmake "i 0
+  my_while [:i<3] [make "i :i+1]
+  op :i
+end
+
+make "tests [
+  ; invoke tests
+  [[one_explicit_slot_test] [] 3]
+  [[two_explicit_slots_test] [] 3]
+  [[named_slot_test] [] 3]
+  [[procedure_text_test] [] 3]
+
+  ; aply tests
+  [[one_explicit_slot_test_apply] [] 3]
+  [[two_explicit_slots_test_apply] [] 3]
+  [[named_slot_test_apply] [] 3]
+  [[procedure_text_test_apply] [] 3]
+
+  [[while_op_cond] [] 3]
+  [[while_op_instr] [] 3]
+  [[while_false] [] 3]
+  [[while_count] [] 3]
+]
+
+to run_tests
+  foreach :tests [
+    localmake "commands first ?
+    localmake "args first bf ?
+    localmake "expected_result first bf bf ?
+
+    type :commands
+    type "| |
+    localmake "result apply :commands :args
+    if :result = :expected_result [
+      print "succeeded
+    ] [
+      print "failed
+      (print "Expected :expected_result "got: :result)
+    ]
+  ]
+end
+
+run_tests
+bye

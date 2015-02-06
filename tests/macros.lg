@@ -1,0 +1,22 @@
+.macro foo
+output [print 10]
+end
+
+type [Should print 10:\ ]
+foo
+
+.macro localmake :name :value
+output (list "local (word "" :name) "apply ""make (list :name :value))
+end
+
+make "x 10
+to bar
+localmake "x 5
+type [Should print 5:\ ]
+print :x
+end
+
+bar
+
+type [Should print 10:\ ]
+print :x

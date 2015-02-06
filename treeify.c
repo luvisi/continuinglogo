@@ -28,7 +28,7 @@
    remaining tokens to parse, named "input".
 
    It returns three values:
-       The return value, a 1 or 0, indicating failure or success at
+       The return value, a 0 or 1, indicating failure or success at
        parsing the production the procedure parses.
 
        If successful, the Lisp version of the parsed portion of the input,
@@ -55,6 +55,7 @@
                <if expr> |
                <colon name> |
                <quote name> |
+               <thingquote> |
                <name> |
                <number> |
                <sentence> |
@@ -64,6 +65,7 @@
                <implicit procedure call>
     <colon name> = ':' NAME  { return NAME }
     <quote name> = '"' NAME  { return (quote NAME) }
+    <thingquote> = THINGQUOTE <thing> { return <thing> }
     <name> = NAME { return NAME }
     <number> = NUMBER { return NUMBER }
     <sentence> = SENTENCE { return (quote SENTENCE) }
@@ -91,6 +93,7 @@ static int term(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
 static int factor(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
 static int colon_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
 static int quote_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
+static int thingquote(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
 static int sentence(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
 static int array_lit(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
 static int number(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
@@ -190,7 +193,7 @@ static int expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
     /* Keep parsing more sums as long as we have comparison operators.
        By doing this with a loop rather than recursion, we make the
-       operators associate to the right. */
+       operators associate to the left. */
     while(!is_nil(ic, sub_remaining) &&
           (name_eq(car(sub_remaining), ic->n_equal) ||
            name_eq(car(sub_remaining), ic->n_lt) ||
@@ -241,6 +244,8 @@ static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     sexpr *sub_output3 = NULL, *sub_remaining3 = NULL;
     int ret;
 
+    sexpr *oper;
+
     protect_ptr(ic->g, (void **) &sub_output);
     protect_ptr(ic->g, (void **) &sub_output2);
     protect_ptr(ic->g, (void **) &sub_output3);
@@ -260,11 +265,14 @@ static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
         goto exit;
     }
 
+    /* Capture whether we used IF or IFELSE. */
+    oper = car(input);
+
     /* Try to parse another run_list (the "else" argument). */
     if(run_list(ic, sub_remaining2, &sub_output3, &sub_remaining3)) {
         /* If we succeed, create a three argument (if) expression. */
         STORE(ic->g, NULL, *output,
-                           cons(ic, ic->n_if,
+                           cons(ic, oper,
                                     cons(ic, sub_output,
                                              cons(ic, sub_output2,
                                                       cons(ic, sub_output3,
@@ -275,7 +283,7 @@ static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     } else {
         /* If we fail, create a two argument (if) expression. */
         STORE(ic->g, NULL, *output,
-                           cons(ic, ic->n_if,
+                           cons(ic, oper,
                                     cons(ic, sub_output,
                                              cons(ic, sub_output2,
                                                       ic->g_nil))));
@@ -345,7 +353,7 @@ static int run_list(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     return ret;
 }
 
-/* Attempt to parse/difference a sum of one or more terms. */
+/* Attempt to parse a sum/difference of one or more terms. */
 static int sum(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
@@ -365,7 +373,7 @@ static int sum(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
        additional terms as long as the remaining input starts with a
        plus or a minus.
        Doing this in a loop, rather than with recursion, lets us make
-       the operators associate to the right. */
+       the operators associate to the left. */
     while(!is_nil(ic, sub_remaining) &&
           (name_eq(car(sub_remaining), ic->n_plus) ||
            name_eq(car(sub_remaining), ic->n_minus))) {
@@ -411,7 +419,7 @@ static int term(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
        additional factor as long as the remaining input starts with a
        multiplication (*) or division (/).
        Doing this in a loop, rather than with recursion, lets us make
-       the operators associate to the right. */
+       the operators associate to the left. */
     while(!is_nil(ic, sub_remaining) &&
           (name_eq(car(sub_remaining), ic->n_star) ||
            name_eq(car(sub_remaining), ic->n_slash))) {
@@ -494,6 +502,13 @@ static int factor(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
         goto exit;
     }
 
+    if(thingquote(ic, input, &sub_output, &sub_remaining)) {
+        STORE(ic->g, NULL, *output, sub_output);
+        STORE(ic->g, NULL, *remaining, sub_remaining);
+        ret = 1;
+        goto exit;
+    }
+
     if(sentence(ic, input, &sub_output, &sub_remaining)) {
         STORE(ic->g, NULL, *output, sub_output);
         STORE(ic->g, NULL, *remaining, sub_remaining);
@@ -517,8 +532,10 @@ static int factor(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
     /* An explicit procedure call is (<proc> <arg> ...) where we explicitly
        say how many arguments we are giving the procedure.
-       This needs to be below the parenthesized expression case, below,
-       to avoid misinterpreting expression components as a procedure name.
+       This needs to be above the parenthesized expression case, below.
+       If we test for parenthesized expressions first, than an explicit
+       procedure call will be parsed as an implicit procedure call inside
+       of parenthesis.
 
        Unfortunately, that means we need a few hacks in 
        <explicit_procedure_call> (later on) to avoid catching things that
@@ -634,6 +651,30 @@ static int quote_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    return ret;
+}
+
+
+/* THINGQUOTE <thing> -> <thing> */
+static int thingquote(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    int ret;
+
+    if(is_nil(ic, input)) {
+        ret = 0;
+        goto exit;
+    }
+
+    if(name_eq(car(input), ic->n_thingquote) &&
+       !is_nil(ic, cdr(input))) {
+        STORE(ic->g, NULL, *output, car(cdr(input)));
+        STORE(ic->g, NULL, *remaining, cdr(cdr(input)));
+        ret = 1;
+        goto exit;
+    }
+
+    ret = 0;
+
+    exit:
     return ret;
 }
 
@@ -1033,6 +1074,9 @@ static int implicit_procedure_call(IC *ic, sexpr *input, sexpr **output, sexpr *
 sexpr *treeify(IC *ic, sexpr *input) {
     sexpr *output = NULL, *remaining = NULL;
 
+    /* If we are passed a non-nil input that is not a cons,
+       then we parse a list containing the input.
+       This allows us to parse things like a single colon name. */
     if(input->t != CONS && !is_nil(ic, input))
         input = cons(ic, input, ic->g_nil);
 

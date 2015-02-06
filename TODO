@@ -1,5 +1,113 @@
 
-Should FUNARG calls preserve the tail context of their callers?
+Make # work inside of REPEAT.
+
+Add THROW "TOPLEVEL and THROW "SYSTEM.
+Make THROW "ERROR with a second argument indicate location of error
+as caller?  Can I do this?
+Make ERROR return a list like Ucblogo?
+
+Fix FULLPRINTP handling in io_print_sexpr() in io.c.
+Need to only turn off fullprint for operators.
+  make "fullprintp "true
+  print "| |
+does not work, but
+  print "|  |
+does.
+
+Make: IFELSE 5 []
+Throw an error with IFELSE in the name and not IF.
+Fix IF_C in interpreter.c
+Maybe add field to IF_C?
+
+Rewrite amb/fail in lisp?
+
+Possible candidates for rewriting in C?
+  treeified procedure body caching
+    treeify_body
+    wrapbody
+  to_proc/apply/invoke
+  run
+
+  equalp (explicit stack?)
+  memberp
+  ?
+  runresult
+  gensym
+
+
+Reduce the amount of time that is spent in the garbage collector.
+  For runtower.lg:
+      ic_xmalloc(): 41.1% of run time.
+      STORE():      19.3% of run time.
+      Total:        60.4% of run time.
+
+  Reduce the work associated with each allocation.
+  Reduce the number of allocations.
+  Reduce the work associated with each STORE().
+  Reduce the number of STORE()'s.
+
+Speed up the interpreter itself.
+  Reduce work performed by the interpreter.
+  Compile to some intermediate form.
+
+Make garbage collector generational?
+  All calls to STORE() into a non-root, non-protected pointer,
+  MUST specify the object being modified.
+  3 generations
+  Track oldyoung pointers with a pointer in node's.
+  Track what generation a node belongs to, so we know whether it
+  needs to be marked.
+  STORE() needs to check whether the object being stored needs
+  to be marked (source is black or generation > collection
+  and target is white and generation <= generation).
+  STORE() needs to add pointers from old to new generations to
+  the old/new list.
+  mark_object() only marks objects with generation <= generation.
+
+  marking must:
+    traverse the oldyoung list:
+      ignore nodes in generations being collected
+      mark children of nodes in older generations
+      remove from the oldyoung list nodes with no younger children
+
+  sweeping must:
+    unlink all nodes to be freed from the oldyoung list
+    work from older generations to younger generations
+    free and unlink unmarked nodes
+    for marked nodes:
+      Clear marks
+      decrement promotion count
+      promote if necessary
+        Increase generation level
+        check old/young
+        unlink from current generation, link into new generation
+
+  oldyoung pointers can come from:
+    STORE() - easy to detect and act on.
+    promotion
+  oldyoung pointers can go away from:
+    STORE() - should we try to detect?
+    promotion
+  need to check on:
+    STORE()
+    marking phase - unlink if no oldyoung poingers
+    sweeping phase - link during promotion if necessary
+
+  Need a simple test - does this object contain pointers to any younger
+  generations?
+    
+Write a test suite for apply and invoke, covering all forms of
+functional arguments.
+
+Eliminate output_error_info type, and store values separately in
+ic and continuations?  mk_output_error_info is called a lot.
+
+Check all functions that operate on names for allocations.
+Unprotected names can be garbage collected during allocation.
+Maybe this is only a concern for functions that call intern()?
+
+Make (apply) into a macro, with the heavy lifting done by a C
+function?
 
 logoplatform special variable
 
@@ -7,13 +115,10 @@ Improve the reader's handling of EOF conditions.
 
 Make the reader automatically continue lines on parenthesis (?)
 
-Change the symbol list into a hash table.
-    ic->name_list is only referenced in intern_len() and
-    cleanup_name_table(), both in list_memory.c
-
 Rename variables and procedures to reduce the probability of name capture.
 
-Make eval: begin just set things up and jump to apply: (?)
+Make the eval: section for (begin) just set things up and jump to apply:
+(?)
 
 Rewrite treeify() in lisp so that we can call LOAD for uninitialized
 procedures during treeification?

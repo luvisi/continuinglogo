@@ -25,8 +25,7 @@
 #include "byte_buffer.h"
 
 /* Function for marking the buffer during garbage collection. */
-void mark_byte_buffer(GC *g, void *c,
-                      object_marker om, weak_pointer_registerer wpr) {
+void mark_byte_buffer(GC *g, void *c, object_marker om, weak_pointer_registerer wpr) {
     byte_buffer *b = (byte_buffer *) c;
     om(g, b->buffer);
 }

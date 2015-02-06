@@ -1,12 +1,19 @@
 
+to add.option.helper :options :count
+    if :options = [] [op fput :new :rest]
+
+    local "first
+    make "first first :options
+    if :new = :first [fail]
+    if :new = :first + :count [fail]
+    if :new = :first - :count [fail]
+    op add.option.helper bf :options :count+1
+end
+
 to add.option :rest
-    localmake "new (amb 0 1 2 3 4 5 6 7)
-    foreach :rest [
-        if :new = ?   [fail] ; Same row.
-        if :new = ?+# [fail] ; Same diagonal.
-        if :new = ?-# [fail] ; Same diagonal.
-    ]
-    op fput :new :rest
+    local "new
+    make "new (amb 0 1 2 3 4 5 6 7)
+    op add.option.helper :rest 1
 end
 
 to 8.queens

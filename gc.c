@@ -46,10 +46,11 @@
 
 /* Forward declarations. */
 void forget_weak_pointers(GC *g);
-void register_weak_pointer(GC *g, void **p);
 void collect_some_garbage(GC *g);
 void collect_increment(GC *g);
 void mark_roots(GC *g);
+void register_weak_pointer(GC *g, void **p);
+void mark_object(GC *g, void *obj);
 
 GC *create_gc(pointer_iterator rm,
               void *roots,
@@ -218,33 +219,6 @@ void forget_weak_pointers(GC *g) {
         wpb->count = 0;
         wpb = wpb->next;
     }
-}
-
-/* This adds a weak pointer to the list of weak pointers to process
-   at the end of the mark phase. */
-void register_weak_pointer(GC *g, void **p) {
-    struct weak_pointer_block *wpb = g->weak_pointers;
-
-    /* Skip over any full weak pointer blocks */
-    while(wpb->count >= WEAK_POINTER_BLOCK_SIZE &&
-          wpb->next != NULL)
-        wpb = wpb->next;
-
-    /* Allocate a new weak pointer block if necessary */
-    if(wpb->count >= WEAK_POINTER_BLOCK_SIZE &&
-       wpb->next == NULL) {
-        wpb->next = (struct weak_pointer_block *) 
-                         malloc(sizeof(struct weak_pointer_block));
-        if(g->weak_pointers == NULL) {
-            fprintf(stderr, "Out of memory!\n");
-            exit(EXIT_FAILURE);
-        }
-        wpb = wpb->next;
-        wpb->next = NULL;
-        wpb->count = 0;
-    }
-
-    wpb->pointers[wpb->count++] = p;
 }
 
 /* Called during the mark phase.  The mark stack must be non-empty
@@ -427,79 +401,50 @@ void collect_some_garbage(GC *g) {
 }
 
 
-/* The function called by the STORE macro.
+/* mark_object marks an object during the mark phase.
 
-   The invariant that must be maintained is that during the marking phase,
-   there must never be a pointer from a BLACK node to a WHITE node.
-   When the assignment would cause this to happen, the node being stored
-   is marked.
-
-   No invariant needs to be maintained during the sweep phase.  All nodes
-   will be white at the end for the beginning of the next mark phase.
+   We do nothing with NULL pointers.
+   We do nothing with objects marked BLACK or GRAY.  They are
+   already marked.  GRAY objects are on the mark stack and will be
+   processed in due time by mark_one().
+   WHITE objects get marked GRAY and placed on the mark stack for further
+   processing.
  */
-/*
-void store(GC *g, void *obj, void **field, void *pointer) {
-    if(pointer == NULL) return;
+void mark_object(GC *g, void *obj) {
+    if(obj == NULL) return;
+    struct node *n = ((struct node *) obj) - 1;
+    if(n->mark == MARK_WHITE) {
+        n->mark = MARK_GRAY;
+        n->stack = g->mark_stack;
+        g->mark_stack = n;
+    }
+}
 
-    switch(g->mode) {
-        case INCREMENTAL:
-            switch(g->state) {
-                case GC_MARKING:
-                    if(obj == NULL ||
-                       (((struct node *)obj - 1)->mark == MARK_BLACK &&
-                        ((struct node *)pointer - 1)->mark == MARK_WHITE)) {
-                        mark_object(g, pointer);
-                    }
-                    break;
-                case GC_SWEEPING:
-                    break;
-            }
-            *field = pointer;
-            break;
+/* This adds a weak pointer to the list of weak pointers to process
+   at the end of the mark phase. */
+void register_weak_pointer(GC *g, void **p) {
+    struct weak_pointer_block *wpb = g->weak_pointers;
 
-        case STOP_THE_WORLD:
-            *field = pointer;
-            break;
+    /* Skip over any full weak pointer blocks */
+    while(wpb->count >= WEAK_POINTER_BLOCK_SIZE &&
+          wpb->next != NULL)
+        wpb = wpb->next;
 
-        default:
-            fprintf(stderr, "Unsupported GC mode: %d\n", g->mode);
+    /* Allocate a new weak pointer block if necessary */
+    if(wpb->count >= WEAK_POINTER_BLOCK_SIZE &&
+       wpb->next == NULL) {
+        wpb->next = (struct weak_pointer_block *)
+                         malloc(sizeof(struct weak_pointer_block));
+        if(g->weak_pointers == NULL) {
+            fprintf(stderr, "Out of memory!\n");
             exit(EXIT_FAILURE);
-    }
-}
-*/
-
-
-/* See PROTECTION in gc.h for a description of how these functions are
-   used by the client program.
-
-   See mark_roots() above to see how the protection stacks are used
-   by the garbage collector.
- */
-void *protect(GC *g, void *o) {
-    if(g->protect_count == PROTECT_MAX) {
-        fprintf(stderr, "Exceeded maximum protection count\n");
-        exit(EXIT_FAILURE);
+        }
+        wpb = wpb->next;
+        wpb->next = NULL;
+        wpb->count = 0;
     }
 
-    STORE(g, NULL, g->protect_stack[g->protect_count++], o);
-    return o;
+    /* At this point, wpb is guaranteed to point to a weak pointer block
+       that contains space for a new weak pointer. */
+    wpb->pointers[wpb->count++] = p;
 }
-
-void unprotect(GC *g) {
-    g->protect_count--;
-}
-
-void *protect_ptr(GC *g, void **o) {
-    if(g->protect_ptr_count == PROTECT_MAX) {
-        fprintf(stderr, "Exceeded maximum pointer protection count\n");
-        exit(EXIT_FAILURE);
-    }
-
-    g->protect_ptr_stack[g->protect_ptr_count++] = o;
-    return o;
-}
-
-void unprotect_ptr(GC *g) {
-    g->protect_ptr_count--;
-}
-

@@ -1,0 +1,35 @@
+
+
+to test.position.helper :i
+  if :i > :count [op "true]
+  if :new = item :i :rest [op "false]
+  if :new = (item :i :rest) + (:count - :i + 1) [op "false]
+  if :new = (item :i :rest) - (:count - :i + 1) [op "false]
+  op test.position.helper :i + 1
+end
+
+to test.position :new :count :rest
+    op test.position.helper 1
+end
+
+to 8.queens
+    8.queens.helper 0 8 array 8
+end
+
+to 8.queens.iterator :i
+    if :i = :total [stop]
+    if test.position :i :n :sofar [
+        setitem :n+1 :sofar :i
+        8.queens.helper :n+1 :total :sofar
+    ]
+    8.queens.iterator :i+1
+end
+
+to 8.queens.helper :n :total :sofar
+    if :n = :total [print :sofar stop]
+
+    8.queens.iterator 0
+end
+
+8.queens
+bye

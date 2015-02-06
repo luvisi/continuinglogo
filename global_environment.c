@@ -323,6 +323,42 @@ sexpr *cdr_subr(IC *ic, sexpr *s) {
         return ic->g_nil;
 }
 
+sexpr *cons_proc_cache_subr(IC *ic, sexpr *s) {
+    sexpr *pair = car(s);
+    if(pair->t != CONS)
+        bad_argument(ic, pair);
+    return pair->u.cons.proc_cache;
+}
+
+sexpr *set_cons_proc_cache_subr(IC *ic, sexpr *s) {
+    sexpr *pair = car(s);
+    sexpr *new_tree = car(cdr(s));
+
+    if(pair->t != CONS)
+        bad_argument(ic, pair);
+
+    STORE(ic->g, pair, pair->u.cons.proc_cache, new_tree);
+    return ic->g_unbound;
+}
+
+sexpr *cons_tree_cache_subr(IC *ic, sexpr *s) {
+    sexpr *pair = car(s);
+    if(pair->t != CONS)
+        bad_argument(ic, pair);
+    return pair->u.cons.tree_cache;
+}
+
+sexpr *set_cons_tree_cache_subr(IC *ic, sexpr *s) {
+    sexpr *pair = car(s);
+    sexpr *new_tree = car(cdr(s));
+
+    if(pair->t != CONS)
+        bad_argument(ic, pair);
+
+    STORE(ic->g, pair, pair->u.cons.tree_cache, new_tree);
+    return ic->g_unbound;
+}
+
 /* Internal gensym.
    Generate an uninterned symbol with the provided name.
    A GENSYM library procedure defaults to no arguments and normally
@@ -385,7 +421,7 @@ sexpr *numberp_sexpr(IC *ic, sexpr *s) {
         return ic->n_false;
 }
 
-/* Is the argument a NAME? */
+/* Is the argument a NAME with a bound value? */
 sexpr *namep(IC *ic, sexpr *s) {
     if(car(s)->t == NAME && car(s)->u.name.symbol->value != ic->g_unbound)
         return ic->n_true;
@@ -570,7 +606,21 @@ sexpr *keyp_subr(IC *ic, sexpr *s) {
 
 /* Return the list of interned names. */
 sexpr *oblist(IC *ic, sexpr *s) {
-    return ic->name_list;
+    sexpr *ret = ic->g_nil, *e;
+    sexpr *linking_object = NULL;
+    sexpr **nextp = &ret;
+    int i;
+
+    protect_ptr(ic->g, (void **)&ret);
+    for(i = 0; i < NAME_TABLE_HASH_BUCKETS; i++)
+        for(e = ic->name_table[i]; !is_nil(ic, e); e = cdr(e)) {
+            STORE(ic->g, linking_object, *nextp, cons(ic, car(e), ic->g_nil));
+            linking_object = *nextp;
+            nextp = &cdr(*nextp);
+        }
+    unprotect_ptr(ic->g);
+
+    return ret;
 }
 
 /* Manually run the garbage collector. */
@@ -658,10 +708,12 @@ sexpr *butlast(IC *ic, sexpr *s) {
         /* It's a list.  Create a new list destructively so we can
            do it in a loop. */
         sexpr *ret = ic->g_nil;
+        sexpr *linking_object = NULL;
         sexpr **nextp = &ret;
         protect_ptr(ic->g, (void **)&ret);
         while(e->t == CONS && !is_nil(ic, cdr(e))) {
-            STORE(ic->g, NULL, *nextp, cons(ic, car(e), ic->g_nil));
+            STORE(ic->g, linking_object, *nextp, cons(ic, car(e), ic->g_nil));
+            linking_object = *nextp;
             nextp = &cdr(*nextp);
             e = cdr(e);
         }
@@ -712,6 +764,8 @@ sexpr *word(IC *ic, sexpr *e) {
 
 /* Is the argument the empty word or the empty list? */
 sexpr *emptyp(IC *ic, sexpr *s) {
+    /* There's only ever one empty name, so just do a pointer equality
+       test. */
     if(is_nil(ic, car(s)) || car(s) == ic->n_empty)
         return ic->n_true;
     else
@@ -722,19 +776,29 @@ sexpr *emptyp(IC *ic, sexpr *s) {
    Sentences in the arguments get flattened. */
 sexpr *sentence(IC *ic, sexpr *s) {
     sexpr *ret = ic->g_nil;
+    sexpr *linking_object = NULL;
     sexpr **nextp = &ret;
     protect_ptr(ic->g, (void **)&ret);
 
     while(!is_nil(ic, s)) {
         if(car(s)->t == CONS) {
-            sexpr *e = car(s);
-            while(e->t == CONS) {
-                STORE(ic->g, NULL, *nextp, cons(ic, car(e), ic->g_nil));
-                nextp = &cdr(*nextp);
-                e = cdr(e);
+            if(is_nil(ic, cdr(s))) {
+                /* We don't update nextp in this case because
+                   we are dealing with the last argument and will
+                   not be adding any more. */
+                STORE(ic->g, linking_object, *nextp, car(s));
+            } else {
+                sexpr *e = car(s);
+                while(e->t == CONS) {
+                    STORE(ic->g, linking_object, *nextp, cons(ic, car(e), ic->g_nil));
+                    linking_object = *nextp;
+                    nextp = &cdr(*nextp);
+                    e = cdr(e);
+                }
             }
         } else if(!is_nil(ic, car(s))) {
-            STORE(ic->g, NULL, *nextp, cons(ic, car(s), ic->g_nil));
+            STORE(ic->g, linking_object, *nextp, cons(ic, car(s), ic->g_nil));
+            linking_object = *nextp;
             nextp = &cdr(*nextp);
         }
         s = cdr(s);
@@ -754,6 +818,20 @@ sexpr *fput_subr(IC *ic, sexpr *s) {
 
     return cons(ic, thing, list);
 }
+
+/* COMBINE - Combine thing1 with thing2.
+             If thing2 is a word, outputs WORD thing1 thing2.
+             If thing2 is a list, outputs FPUT thing1 thing2.
+ */
+sexpr *combine(IC *ic, sexpr *s) {
+    sexpr *thing2 = car(cdr(s));
+
+    if(thing2->t == NAME || thing2->t == NUMBER)
+        return word(ic, s);
+    else
+        return fput_subr(ic, s);
+}
+
 
 /* Make treeify available for use in initialize.txt. */
 sexpr *treeify_subr(IC *ic, sexpr *s) {
@@ -796,7 +874,7 @@ sexpr *rerandom_subr(IC *ic, sexpr *s) {
 sexpr *local(IC *ic, sexpr *s) {
     /* For handling the one argument version where the argument is
        a list of names. */
-    if(s->t == CONS && car(s)->t == CONS)
+    if(s->t == CONS && (car(s)->t == CONS || car(s)->t == EMPTY_LIST))
         s = car(s);
 
     while(s->t == CONS) {
@@ -810,11 +888,12 @@ sexpr *local(IC *ic, sexpr *s) {
 
 /* Fetch the value of the name passed. */
 sexpr *thing(IC *ic, sexpr *s) {
-    if(car(s)->u.name.symbol->value == ic->g_unbound) {
-        eprint_sexpr(ic, car(s));
-        eprintf(ic, " has no value");
-        throw_error(ic, ic->continuation->line);
-    } else if(car(s)->t == NAME) {
+    if(car(s)->t == NAME) {
+        if(car(s)->u.name.symbol->value == ic->g_unbound) {
+            eprint_sexpr(ic, car(s));
+            eprintf(ic, " has no value");
+            throw_error(ic, ic->continuation->line);
+        }
         return car(s)->u.name.symbol->value;
     } else {
         bad_argument(ic, car(s));
@@ -822,7 +901,12 @@ sexpr *thing(IC *ic, sexpr *s) {
 }
 
 /* Make a LINE object.
-   Used while reading in a Logo procedure. */
+   Used while reading in a Logo procedure.
+   Arguments are:
+       raw_line     - A word containing the entire line.
+       parsed_line  - A sentence containing the parsed line.
+       procedure    - The procedure containing the line.
+ */
 sexpr *mk_line_subr(IC *ic, sexpr *s) {
     return mk_line(ic, car(s), car(cdr(s)), car(cdr(cdr(s))));
 }
@@ -856,7 +940,7 @@ sexpr *line_parsed(IC *ic, sexpr *s) {
 sexpr *set_current_line(IC *ic, sexpr *s) {
     if(car(s)->t == LINE) {
         if(ic->continuation->parent != NULL) {
-            STORE(ic->g, NULL, ic->continuation->parent->line, car(s));
+            STORE(ic->g, ic->continuation->parent, ic->continuation->parent->line, car(s));
         }
         return ic->g_unbound;
     } else {
@@ -1068,20 +1152,28 @@ sexpr *macro_subr(IC *ic, sexpr *s) {
 sexpr *parse_subr(IC *ic, sexpr *s) {
     sexpr *ret;
     logoreader *lr = mk_logoreader(ic);
-    char *wordstring = get_cstring(ic, to_name(ic, car(s)));
-    protect(ic->g, wordstring);
-    logoread_from_string(lr, get_cstring(ic, to_name(ic, car(s))));
+    protect(ic->g, lr);
+
+    sexpr *name = to_name(ic, car(s));
+    protect(ic->g, name);
+
+    char *wordstring = get_cstring(ic, name);
+    logoread_from_string(lr, wordstring);
+
     ret = readlist(lr);
+
     unprotect(ic->g);
+    unprotect(ic->g);
+
     return ret;
 }
 
 
 
 /* These are the helper functions that manipulate flags.  They are used
-   by BURY, UNBURY, BURIEDP,
+   by BURY,  UNBURY,  BURIEDP,
       TRACE, UNTRACE, TRACEDP, 
-      STEP, STEPPED, STEPPEDP
+      STEP,  STEPPED, STEPPEDP
  */
 
 /* flag_helper() sets or clears a flag or flags based on mask and flag */
@@ -1293,7 +1385,7 @@ static void erase_procedure(IC *ic, sexpr *name, sexpr *orig_arg) {
     STORE(ic->g, name->u.name.symbol, name->u.name.symbol->function_source, ic->g_nil);
 }
 
-/* To erase a property list, just set ot to the empty list. */
+/* To erase a property list, just set it to the empty list. */
 static void erase_plist(IC *ic, sexpr *name, sexpr *orig_arg) {
     if(name->t != NAME)
         bad_argument(ic, orig_arg);
@@ -1534,7 +1626,7 @@ sexpr *copydef_subr(IC *ic, sexpr *s) {
     return ic->g_unbound;
 }
 
-/* FORM - Created formated version of a number. */
+/* FORM - Create a formated version of a number. */
 sexpr *form_subr(IC *ic, sexpr *args) {
     int len;
     char *buf;
@@ -1570,10 +1662,11 @@ sexpr *form_subr(IC *ic, sexpr *args) {
     } else {
         /* hack where the precision is treated as a
            format string for sprintf */
-        char *format = get_cstring(ic, precision);
+        char *format = protect(ic->g, get_cstring(ic, precision));
         len = snprintf(NULL, 0, format, num->u.number.value);
         buf = ic_xmalloc(ic, len+1, mark_cstring);
         len = snprintf(buf, len+1, format, num->u.number.value);
+        unprotect(ic->g);
     }
 
     return intern_len(ic, buf, buf, len);
@@ -1589,7 +1682,9 @@ sexpr *wait_subr(IC *ic, sexpr *s) {
 
     count = (int)trunc(to_number(ic, car(s))->u.number.value);
     seconds = count / 60;
-    useconds = (count % 60) * 16667;
+    useconds = (count % 60) * 16667; /* 16667 is about the number of
+                                        microseconds in a sixtieth of a
+                                        second.  1,000,000/60. */
     if(seconds) sleep(seconds);
     if(useconds) usleep(useconds);
     return ic->g_unbound;
@@ -1644,7 +1739,7 @@ static double degreesin(double degrees) {
     double ret;
 
     /* Set up an invariant.  Call d0 the original value of degrees.
-       sin(d0) = sin(degrees) * (sin ? -1 : 1)
+       sin(d0) = sin(degrees) * (sign ? -1 : 1)
  
        First, we make sure that degrees is positive.
        If not, we set sign and force degrees to be positive.
@@ -1818,7 +1913,7 @@ sexpr *ascii_subr(IC *ic, sexpr *s) {
 
 /* Uppercase all of the letters in the argument. */
 sexpr *uppercase_subr(IC *ic, sexpr *s) {
-    sexpr *arg = to_name(ic, car(s));
+    sexpr *arg = protect(ic->g, to_name(ic, car(s)));
     int len = arg->u.name.length;
     char *buf = ic_xmalloc(ic, len, mark_cstring);
     int i;
@@ -1826,12 +1921,13 @@ sexpr *uppercase_subr(IC *ic, sexpr *s) {
     for(i = 0; i < len; i++)
         buf[i] = toupper(arg->u.name.name[i]);
 
+    unprotect(ic->g);
     return intern_len(ic, buf, buf, len);
 }
 
 /* Lowercase all of the letters in the argument. */
 sexpr *lowercase_subr(IC *ic, sexpr *s) {
-    sexpr *arg = to_name(ic, car(s));
+    sexpr *arg = protect(ic->g, to_name(ic, car(s)));
     int len = arg->u.name.length;
     char *buf = ic_xmalloc(ic, len, mark_cstring);
     int i;
@@ -1839,6 +1935,7 @@ sexpr *lowercase_subr(IC *ic, sexpr *s) {
     for(i = 0; i < len; i++)
         buf[i] = tolower(arg->u.name.name[i]);
 
+    unprotect(ic->g);
     return intern_len(ic, buf, buf, len);
 }
 
@@ -1853,8 +1950,9 @@ sexpr *substringp_subr(IC *ic, sexpr *s) {
        (haystack->t != NAME && haystack->t != NUMBER))
         return ic->n_false;
 
-    ns = get_cstring(ic, to_name(ic, needle));
+    ns = protect(ic->g, get_cstring(ic, to_name(ic, needle)));
     hs = get_cstring(ic, to_name(ic, haystack));
+    unprotect(ic->g);
     if(name_eq(ic->n_caseignoredp->u.name.symbol->value, ic->n_true)) {
         /* If CASEIGNOREDP is set to "TRUE then we forcibly uppercase
            all characters in both strings before the search. */
@@ -1880,8 +1978,9 @@ sexpr *beforep_subr(IC *ic, sexpr *s) {
     char *fs, *ss;
     int comparison;
 
-    fs = get_cstring(ic, to_name(ic, first));
+    fs = protect(ic->g, get_cstring(ic, to_name(ic, first)));
     ss = get_cstring(ic, to_name(ic, second));
+    unprotect(ic->g);
 
     /* If CASEIGNOREDP is "TRUE, then we use strcasecmp to get a case
        insensitive comparison. */
@@ -2039,6 +2138,33 @@ sexpr *or_subr(IC *ic, sexpr *s) {
     return ic->n_false;
 }
 
+/* Subroutine for #.
+   Returns :template.number.
+ */
+sexpr *hash_subr(IC *ic, sexpr *s) {
+    return ic->n_template_number->u.name.symbol->value;
+}
+
+/* Handles ? */
+sexpr *question_subr(IC *ic, sexpr *s) {
+    if(is_nil(ic, s))
+      return ic->n_q1->u.name.symbol->value;
+
+    switch((int)trunc(to_number(ic, car(s))->u.number.value)) {
+        case 1:  return ic->n_q1->u.name.symbol->value;
+        case 2:  return ic->n_q2->u.name.symbol->value;
+        case 3:  return ic->n_q3->u.name.symbol->value;
+        case 4:  return ic->n_q4->u.name.symbol->value;
+        case 5:  return ic->n_q5->u.name.symbol->value;
+        case 6:  return ic->n_q6->u.name.symbol->value;
+        case 7:  return ic->n_q7->u.name.symbol->value;
+        case 8:  return ic->n_q8->u.name.symbol->value;
+        case 9:  return ic->n_q9->u.name.symbol->value;
+        case 10: return ic->n_q10->u.name.symbol->value;
+        default: bad_argument(ic, car(s));
+    }
+}
+
 sexpr *continuation_stacktrace(IC *ic, sexpr *s) {
   continuation *c = ic->continuation;
 
@@ -2066,6 +2192,10 @@ sexpr *environment_stacktrace(IC *ic, sexpr *s) {
     return ic->g_unbound;
 }
 
+sexpr *gc_node_size(IC *ic, sexpr *s) {
+    return mk_number(ic, sizeof(struct node));
+}
+    
 
 
 /* END SUBR's */
@@ -2094,19 +2224,26 @@ void initialize_subr(IC *ic, char *namestr,
 
 }
 
-/* Utility function for adding an FSUBR to the global environment.
-   No arity argument - all fsubrs are of arbitrary arity. */
-void initialize_fsubr(IC *ic, char *namestr, efun f) {
+/* Utility function for adding an FSUBR to the global environment. */
+void initialize_fsubr(IC *ic, char *namestr,
+                              efun f,
+                              int minargs, 
+                              int defargs, 
+                              int maxargs) {
     /* Create the name we will store it in. */
     sexpr *name = intern(ic, namestr);
 
     /* Wrap the C function in a FSUBR object. */
     sexpr *func = mk_fsubr(ic, name, f);
 
+    /* Wrap the FSUBR object in a PROC object containing the minimum,
+       default, and maximum argument counts. */
+    sexpr *proc = mk_proc(ic, func, minargs, defargs, maxargs);
+
     /* Store the FSUBR in the function slot of the symbol associated
        with the name. */
     STORE(ic->g, name->u.name.symbol,
-          name->u.name.symbol->function, func);
+          name->u.name.symbol->function, proc);
 }
 
 /* Add all of the primitives to the global environment. */
@@ -2122,7 +2259,7 @@ void initialize_global_environment(IC *ic) {
     initialize_subr(ic, "dec", dec, 1, 1, 1);
     initialize_subr(ic, "eq", eq, 2, 2, 2);
     initialize_subr(ic, ".eq", dot_eq, 2, 2, 2);
-    initialize_fsubr(ic, "quote", quote);
+    initialize_fsubr(ic, "quote", quote, 1, 1, 1);
     initialize_subr(ic, "internal_function", internal_function, 1, 1, 1);
     initialize_subr(ic, "make", make, 2, 2, 2);
     initialize_subr(ic, "fset", fset, 2, 2, 2);
@@ -2205,6 +2342,7 @@ void initialize_global_environment(IC *ic) {
     initialize_subr(ic, "sentence", sentence, 0, 2, INT_MAX);
     initialize_subr(ic, "se", sentence, 0, 2, INT_MAX);
     initialize_subr(ic, "fput", fput_subr, 2, 2, 2);
+    initialize_subr(ic, "combine", combine, 2, 2, 2);
     initialize_subr(ic, "treeify", treeify_subr, 1, 1, 1);
     initialize_subr(ic, "random", random_subr, 1, 1, 2);
     initialize_subr(ic, "rerandom", rerandom_subr, 0, 0, 1);
@@ -2322,4 +2460,15 @@ void initialize_global_environment(IC *ic) {
                         0, 0, 0);
     initialize_subr(ic, "environment_stacktrace", environment_stacktrace,
                         0, 0, 0);
+    initialize_subr(ic, "cons_proc_cache", cons_proc_cache_subr,
+                        1, 1, 1);
+    initialize_subr(ic, "set_cons_proc_cache", set_cons_proc_cache_subr,
+                        2, 2, 2);
+    initialize_subr(ic, "cons_tree_cache", cons_tree_cache_subr,
+                        1, 1, 1);
+    initialize_subr(ic, "set_cons_tree_cache", set_cons_tree_cache_subr,
+                        2, 2, 2);
+    initialize_subr(ic, "gc_node_size", gc_node_size, 0, 0, 0);
+    initialize_subr(ic, "#", hash_subr, 0, 0, 0);
+    initialize_subr(ic, "?", question_subr, 0, 0, 1);
 }

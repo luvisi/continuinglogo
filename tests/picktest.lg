@@ -1,0 +1,61 @@
+
+if not namep "continuinglogop [
+  print [Redefining PICK]
+  define "pick [
+    [thing]
+    [output item ((ifelse arrayp :thing [first :thing] [1]) +
+                  random count :thing) ~
+                 :thing]
+  ]
+]
+
+to pick_list
+  localmake "things [a b c]
+  repeat 100 [
+    make "things remove pick [a b c] :things
+  ]
+  output :things
+end
+
+to pick_array
+  localmake "things [a b c]
+  repeat 100 [
+    make "things remove pick {a b c} :things
+  ]
+  output :things
+end
+
+to pick_array_non_one_base
+  localmake "things [a b c]
+  repeat 100 [
+    make "things remove pick {a b c}@100 :things
+  ]
+  output :things
+end
+
+
+make "tests [
+  [[pick_list] [] []]
+  [[pick_array] [] []]
+  [[pick_array_non_one_base] [] []]
+]
+
+to run_tests
+  foreach :tests [
+    make "commands first ?
+    make "args first bf ?
+    make "expected_result first bf bf ?
+
+    type :commands
+    type "| |
+    ifelse (apply :commands :args) = :expected_result [
+      print "succeeded
+    ] [
+      print "failed
+    ]
+  ]
+end
+
+run_tests
+bye
+

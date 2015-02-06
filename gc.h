@@ -179,6 +179,15 @@
      * Other functions assume that arguments passed to them are
        protected.
 
+     * unsafe_mk_* functions DO NOT protect their arguments before
+       calling the allocator.  It is the client's responsibility to ensure
+       that arguments passed to unsafe_mk_* functions are protected.
+       These exist primarily for performance reasons.  mk_* calls that
+       occur very frequently can sometimes be replaced with unsafe_mk_*
+       calls, but by default, mk_* functions are used for allocation.
+       I have only replaced mk_* calls with unsafe_mk_* calls after
+       profiling with gprof and gcov and careful examination of the code.
+
      * All functions assume that values returned from other functions
        are not protected.
 
@@ -234,14 +243,12 @@
    into the root set, or into a protected pointer, the macro STORE()
    must be used.  STORE takes four arguments:
        The garbage collection context.
-       The object which is being modified,
+       The object which is being modified if an object is being modified
          or NULL if:
              The root set is being modified.
-             A protected pointer is being modified.
-             The object being modified is not known
-                 (due to the use of a void **)
-         Using NULL will always work, but passing an accurate non-NULL
-         value when it is known will improve the efficiency of the collector.
+             A protected function argument or local variable is being modified.
+         IF AN OBJECT IS BEING MODIFIED, THEN THAT OBJECT MUST BE
+         PASSED!!!
        The full expression for the location being modified.
        The value being stored.
 
@@ -281,7 +288,9 @@
    GRAY means marked, but children have not yet been marked.
    BLACK means marked, and children have also been marked.
  */
-enum gc_mark { MARK_WHITE, MARK_GRAY, MARK_BLACK };
+#define MARK_WHITE 0
+#define MARK_GRAY 1
+#define MARK_BLACK 2
 
 /* The two supported modes for garbage collection.
    STOP_THE_WORLD means a complete garbage collection happens all
@@ -370,16 +379,9 @@ struct gc_context {
 
 typedef struct gc_context GC;
 
-/* A function of type object_marker is passed to the pointer_iterator
-   for each object when the object is traced.  It is used by the 
-   pointer_iterator to mark child objects. */
-typedef void (*object_marker)(GC *, void *);
+typedef void (*object_marker)(GC *g, void *obj);
+typedef void (*weak_pointer_registerer)(GC *g, void **p);
 
-
-/* A function of type weak_pointer_registerer is passed to the
-   pointer_iterator for each object when the object is traced.  It is
-   used by the pointer_iterator to register weak pointers. */
-typedef void (*weak_pointer_registerer)(GC *, void **);
 
 /* A function of type pointer_iterator is passed to allocate every
    time an object is allocated.  It is called on that object during
@@ -399,7 +401,15 @@ struct node {
 
     struct node *next;      /* The linked list of all nodes, for sweeping */
     struct node *stack;     /* The linked list stack for marking          */
-    enum gc_mark mark;      /* MARK_WHITE, MARK_GRAY, or MARK_BLACK       */
+    unsigned char mark;     /* MARK_WHITE, MARK_GRAY, or MARK_BLACK       */
+
+    /* To be used for generational collection.  Not yet implemented. */
+    struct node *oldyoung;  /* The linked list of nodes containing pointers to
+                               other nodes in a younger generation. */
+    unsigned char generation;       /* This node's current generation. */
+    unsigned char collections_left; /* The number of collections left before
+                                       this node will be promoted to the next
+                                       generation. */
 };
 
 
@@ -418,12 +428,6 @@ void set_gc_post_collection_callback(GC *g, void (*)(GC *));
 void set_gc_mode(GC *g, enum gc_mode mode);
 void set_gc_work_per_alloc(GC *g, int count);
 
-void *protect(GC *g, void *o);
-void unprotect(GC *g);
-
-void *protect_ptr(GC *g, void **o);
-void unprotect_ptr(GC *g);
-
 
 
 /* Macro for storing a new pointer into an object.  Not to be used when
@@ -433,24 +437,10 @@ void unprotect_ptr(GC *g);
 
 #define STORE(gc, obj, field, pointer) \
     store((gc), (obj), (void **)&(field), (pointer))
-/* void store(GC *g, void *obj, void **field, void *pointer); */
 
-/* We do nothing with NULL pointers.
-   We do nothing with objects marked BLACK or GRAY.  They are
-   already marked.  GRAY objects are on the mark stack and will be
-   processed in due time.
-   WHITE objects get marked GRAY and placed on the mark stack for further
-   processing.
- */
-static void inline mark_object(GC *g, void *obj) {
-    if(obj == NULL) return;
-    struct node *n = ((struct node *) obj) - 1;
-    if(n->mark == MARK_WHITE) {
-        n->mark = MARK_GRAY;
-        n->stack = g->mark_stack;
-        g->mark_stack = n;
-    }
-}
+/* Version that can be used of building an interpreter without support
+   for incremental collection. */
+/* #define STORE(gc, obj, field, pointer) ((field) = (pointer)) */
 
 /* The function called by the STORE macro.
 
@@ -463,6 +453,8 @@ static void inline mark_object(GC *g, void *obj) {
    will be white at the end for the beginning of the next mark phase.
  */
 static void inline store(GC *g, void *obj, void **field, void *pointer) {
+    void mark_object(GC *g, void *obj);
+
     if(pointer == NULL) return;
 
     switch(g->mode) {
@@ -489,6 +481,41 @@ static void inline store(GC *g, void *obj, void **field, void *pointer) {
             fprintf(stderr, "Unsupported GC mode: %d\n", g->mode);
             exit(EXIT_FAILURE);
     }
+}
+
+/*
+   See PROTECTION above for a description of how these functions are
+   used by the client program.
+
+   See mark_roots() in gc.c to see how the protection stacks are used
+   by the garbage collector.
+ */
+static inline void *protect(GC *g, void *o) {
+    if(g->protect_count == PROTECT_MAX) {
+        fprintf(stderr, "Exceeded maximum protection count\n");
+        exit(EXIT_FAILURE);
+    }
+
+    STORE(g, NULL, g->protect_stack[g->protect_count++], o);
+    return o;
+}
+
+static inline void unprotect(GC *g) {
+    g->protect_count--;
+}
+
+static inline void *protect_ptr(GC *g, void **o) {
+    if(g->protect_ptr_count == PROTECT_MAX) {
+        fprintf(stderr, "Exceeded maximum pointer protection count\n");
+        exit(EXIT_FAILURE);
+    }
+
+    g->protect_ptr_stack[g->protect_ptr_count++] = o;
+    return o;
+}
+
+static inline void unprotect_ptr(GC *g) {
+    g->protect_ptr_count--;
 }
 
 

@@ -24,12 +24,12 @@
 #       interpreter.  They are both tagged unions.
 #           struct sexpr
 #           struct continuation
-#       Declarations for the mark_* and mk_* functions used to create
-#       each type of sexpr and each type of continuation.
+#       Declarations for the mark_*, mk_*, and unsafe_mk_* functions used
+#       to create each type of sexpr and each type of continuation.
 #      
 #   structures.c
-#       Definitions for the mark_* and mk_* functions used to create
-#       each type of sexpr and each type of continuation.
+#       Definitions for the mark_*, mk_*, and unsafe_mk_* functions used
+#       to create each type of sexpr and each type of continuation.
 #
 #
 # I recommend reading just the definitions below for $sexpr_type and
@@ -73,7 +73,15 @@ my $sexpr_type =
     # CONS cells have a car and a cdr, just like in Lisp.
     [ 'struct', 'cons', 1,
       [ 'struct sexpr *', 'car', 1 ],
-      [ 'struct sexpr *', 'cdr', 1 ]],
+      [ 'struct sexpr *', 'cdr', 1 ],
+
+      # proc_cache may contain a cached procedure created by (to_proc) in
+      # initialize.txt
+      [ 'struct sexpr *', 'proc_cache', 1 ],
+
+      # tree_cache may contain a cached treeified version of an sexpr created
+      # by (run) in initialize.txt
+      [ 'struct sexpr *', 'tree_cache', 1 ]],
 
     # The EMPTY_LIST contains no data.
     [ 'struct', 'empty_list', 0 ],
@@ -83,7 +91,7 @@ my $sexpr_type =
     # implementing the SUBR.
     [ 'struct', 'subr', 1,
       [ 'struct sexpr *', 'name', 1 ],
-      [ 'efun', 'func', 1 ]],
+      [ 'efun', 'func', 0 ]],
 
     # FSUBR's are like SUBR's, but their arguments are not evaluated.
     # They are called with the raw unevaluated list structures of
@@ -93,7 +101,7 @@ my $sexpr_type =
     # working.
     [ 'struct', 'fsubr', 1,
       [ 'struct sexpr *', 'name', 1 ],
-      [ 'efun', 'func', 1 ]],
+      [ 'efun', 'func', 0 ]],
 
     # PROC's wrap primitive procedures and user defined procedures with
     # a record indicating the minimum, default, and maximum number of
@@ -195,6 +203,7 @@ my $sexpr_type =
     # It contains 'length'+1 pointers, the last of which contains NULL.
     # This allows us to give the garbage collector a function for the
     # C array that marks everything until it finds a NULL.
+    # See mark_array_members() and array() in list_memory.c for details.
     #
     # 'origin' is the index of the first element.  Normally it is 1 in
     # Logo, but it can be set to 0 to make some algorithms easier to write.
@@ -491,7 +500,7 @@ sub make_markers {
       if(@mark_part_names) {
         # This version has parts that need marking.
         # "s" is a pointer to the main type, to which the (void *) is cast.
-        # A call to om() (the object marker) is created for each field
+        # A call to mark_object() (the object marker) is created for each field
         # that needs to be marked.
         $ret .= '  ' . part_decl($type) .  ' *s = (' .
                        part_decl($type) . " *) c;\n" .
@@ -525,63 +534,69 @@ sub make_makers {
     my(@mark_part_names) = get_mark_part_names($type_name, '', $type);
     my(@short_part_names) = get_short_part_names($type_name, $type);
 
-    if($full) {
-      # We are printing the full definition.
-      # The mk_* function will take an interpreter context (ic)
-      # as an argument, and will take an argument for each simple type
-      # contained in $type when tagged as a $type_name.
-      my $protect_count = 0;
-      $ret .= part_decl($type) . ' *mk_' . $type_name . '(IC *ic';
-      for(my $i = 0; $i < @part_decls; $i++) {
-        next if $short_part_names[$i] eq 't';
-        $ret .= ', ' . $part_decls[$i] . ' ' . $short_part_names[$i];
-      }
-      $ret .= ") {\n";
-      $ret .= '  ' . part_decl($type) . " *ret;\n";
-
-      # All arguments to mk_* functions are protected from the garbage
-      # collector during the call to allocate().
-      for(my $i = 0; $i < @part_names; $i++) {
-        if((grep { $_ eq $part_names[$i] } @mark_part_names)) {
-          $ret .= '  protect(ic->g, ' . $short_part_names[$i] . ");\n";
-          $protect_count++;
+    for my $unsafe ('', 'unsafe_') {
+      if($full) {
+        # We are printing the full definition.
+        # The mk_* function will take an interpreter context (ic)
+        # as an argument, and will take an argument for each simple type
+        # contained in $type when tagged as a $type_name.
+        my $protect_count = 0;
+        $ret .= part_decl($type) . " *${unsafe}mk_" . $type_name . '(IC *ic';
+        for(my $i = 0; $i < @part_decls; $i++) {
+          next if $short_part_names[$i] eq 't';
+          $ret .= ', ' . $part_decls[$i] . ' ' . $short_part_names[$i];
         }
-      }
+        $ret .= ") {\n";
+        $ret .= '  ' . part_decl($type) . " *ret;\n";
 
-      # The object is allocated.  ic_xmalloc terminates execution if
-      # we are out of memory, so there is no need for error checking
-      # here.
-      $ret .= '  ret = ';
-      $ret .= '(' . part_decl($type) . ' *)';
-      $ret .= 'ic_xmalloc(ic, sizeof(' . part_decl($type);
-      $ret .= '), mark_' . $type_name . ");\n";
-
-      # The arguments are unprotected.
-      for(my $i = 0; $i < $protect_count; $i++) {
-        $ret .= "  unprotect(ic->g);\n";
+        # All arguments to mk_* functions are protected from the garbage
+        # collector during the call to allocate().
+        if(!$unsafe) {
+          for(my $i = 0; $i < @part_names; $i++) {
+            if((grep { $_ eq $part_names[$i] } @mark_part_names)) {
+              $ret .= '  protect(ic->g, ' . $short_part_names[$i] . ");\n";
+              $protect_count++;
+            }
+          }
+        }
+  
+        # The object is allocated.  ic_xmalloc terminates execution if
+        # we are out of memory, so there is no need for error checking
+        # here.
+        $ret .= '  ret = ';
+        $ret .= '(' . part_decl($type) . ' *)';
+        $ret .= 'ic_xmalloc(ic, sizeof(' . part_decl($type);
+        $ret .= '), mark_' . $type_name . ");\n";
+  
+        # The arguments are unprotected.
+        if(!$unsafe) {
+          for(my $i = 0; $i < $protect_count; $i++) {
+            $ret .= "  unprotect(ic->g);\n";
+          }
+        }
+  
+        # The parts of the new type are assigned.
+        # These assignments are made without STORE() because
+        # we know this object has not been traced yet, so it is
+        # not possible for us to be in the tracing stage and for
+        # ret to be BLACK.
+        $ret .= '  ret->t = ' . uc($type_name) . ";\n";
+        for(my $i = 0; $i < @part_names; $i++) {
+          next if $short_part_names[$i] eq 't';
+          $ret .= '  ret->' . $part_names[$i] . ' = ' . 
+                              $short_part_names[$i] . ";\n";
+        }
+        $ret .= "  return ret;\n";
+        $ret .= "}\n\n";
+      } else {
+        # We are just creating the declaration for mk_* and unsafe_mk_*
+        $ret .= part_decl($type) . " *${unsafe}mk_" . $type_name . '(IC *ic';
+        for(my $i = 0; $i < @part_decls; $i++) {
+          next if $short_part_names[$i] eq 't';
+          $ret .= ', ' . $part_decls[$i] . ' ' . $short_part_names[$i];
+        }
+        $ret .= ");\n";
       }
-
-      # The parts of the new type are assigned.
-      # These assignments are made without STORE() because
-      # we know this object has not been traced yet, so it is
-      # not possible for us to be in the tracing stage and for
-      # ret to be BLACK.
-      $ret .= '  ret->t = ' . uc($type_name) . ";\n";
-      for(my $i = 0; $i < @part_names; $i++) {
-        next if $short_part_names[$i] eq 't';
-        $ret .= '  ret->' . $part_names[$i] . ' = ' . 
-                            $short_part_names[$i] . ";\n";
-      }
-      $ret .= "  return ret;\n";
-      $ret .= "}\n\n";
-    } else {
-      # We are just creating the declaration for mk_*
-      $ret .= part_decl($type) . ' *mk_' . $type_name . '(IC *ic';
-      for(my $i = 0; $i < @part_decls; $i++) {
-        next if $short_part_names[$i] eq 't';
-        $ret .= ', ' . $part_decls[$i] . ' ' . $short_part_names[$i];
-      }
-      $ret .= ");\n";
     }
   }
 

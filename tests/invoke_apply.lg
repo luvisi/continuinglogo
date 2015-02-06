@@ -1,0 +1,171 @@
+
+
+if not namep "continuinglogop [
+  print [Redefining INVOKE]
+  .defmacro "invoke [
+    [f [a] 2]
+    [op (list "apply "quoted :f "quoted :a)]]
+]
+
+;.macro invoke :f [:a] 2
+;  output (list "apply quoted :f quoted :a)
+;end
+
+;.macro while :while.cond :while.instr
+;  op (list "if "run "quoted :while.cond ~
+;               (list "run "quoted :while.instr ~
+;                     "while :while.cond :while.instr))
+;end
+
+
+
+; OUTPUT inside of an explicit slot template returns from the calling
+; procedure
+to one_explicit_slot_test
+  apply [output ?+1] [2]
+end
+
+; OUTPUT inside of an explicit slot template returns from the calling
+; procedure
+to two_explicit_slots_test
+  apply [output ?1+?2] [2 1]
+end
+
+; OUTPUT inside of a named slot template returns from the calling
+; procedure
+to named_slot_test
+  apply [[x y] output :x+:y] [2 1]
+end
+
+; OUTPUT inside of a procedure text template only returns from the
+; template, NOT from the calling procedure.
+to procedure_text_test
+  localmake "z apply [[x y] [output :x+:y]] [1 4]
+  output :z-2
+end
+
+
+
+
+
+; INVOKE tests
+; OUTPUT inside of an explicit slot template returns from the calling
+; procedure
+to one_explicit_slot_test_invoke
+  invoke [output ?+1] 2
+end
+
+; OUTPUT inside of an explicit slot template returns from the calling
+; procedure
+to two_explicit_slots_test_invoke
+  (invoke [output ?1+?2] 2 1)
+end
+
+; OUTPUT inside of a named slot template returns from the calling
+; procedure
+to named_slot_test_invoke
+  (invoke [[x y] output :x+:y] 2 1)
+end
+
+; OUTPUT inside of a procedure text template only returns from the
+; template, NOT from the calling procedure.
+to procedure_text_test_invoke
+  localmake "z (invoke [[x y] [output :x+:y]] 1 4)
+  output :z-2
+end
+
+to while_op_cond
+  if not namep "continuinglogop [
+    type "|skipping output within WHILE condition... |
+    op 3
+  ]
+  
+  while [op 3] [op 5]
+end
+
+to while_op_instr
+  while ["true] [op 3]
+end
+
+to while_false
+  while ["false] [op 5]
+  op 3
+end
+
+to while_count
+  localmake "i 0
+  while [:i<3] [make "i :i+1]
+  op :i
+end
+
+to increment_i
+  make "i :i+1
+end
+
+to while_quoted_action
+  if not namep "continuinglogop [
+    type "|skipping quoted WHILE action... |
+    op 3
+  ]
+  local "i
+  make "i 0
+  while [:i < 3] "increment_i
+  op :i
+end
+
+to while_quoted_test
+  if not namep "continuinglogop [
+    type "|skipping quoted WHILE test... |
+    op 3
+  ]
+  local [running i]
+  make "running "true
+  make "i 0
+  while ":running [
+    ifelse :i = 3 [
+        make "running "false
+    ] [
+        make "i :i+1
+    ]
+  ]
+  op :i
+end
+
+
+make "tests [
+  [[one_explicit_slot_test] [] 3]
+  [[two_explicit_slots_test] [] 3]
+  [[named_slot_test] [] 3]
+  [[procedure_text_test] [] 3]
+
+  [[one_explicit_slot_test_invoke] [] 3]
+  [[two_explicit_slots_test_invoke] [] 3]
+  [[named_slot_test_invoke] [] 3]
+  [[procedure_text_test_invoke] [] 3]
+
+  [[while_op_cond] [] 3]
+  [[while_op_instr] [] 3]
+  [[while_false] [] 3]
+  [[while_count] [] 3]
+  [[while_quoted_action] [] 3]
+  [[while_quoted_test] [] 3]
+]
+
+to run_tests
+  foreach :tests [
+    make "commands first ?
+    make "args first bf ?
+    make "expected_result first bf bf ?
+
+    type :commands
+    type "| |
+    ifelse (apply :commands :args) = :expected_result [
+      print "succeeded
+    ] [
+      print "failed
+    ]
+  ]
+end
+
+run_tests
+bye

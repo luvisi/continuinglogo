@@ -42,7 +42,7 @@ void mark_weak_cons(GC *g, void *c, object_marker om, weak_pointer_registerer wp
     } else if(s->u.cons.car->u.name.symbol->value != ic->g_unbound  ||
               s->u.cons.car->u.name.symbol->function != ic->g_unbound  ||
               !is_nil(ic, s->u.cons.car->u.name.symbol->properties)) {
-        /* If the name contains a value, a function, or a property list
+        /* If the name contains a value, a procedure, or a property list
            then we treat the car as a strong pointer and mark it. */
         om(g, s->u.cons.car);
     } else {
@@ -55,6 +55,8 @@ void mark_weak_cons(GC *g, void *c, object_marker om, weak_pointer_registerer wp
         wpr(g, (void **)&s->u.cons.car);
     }
   }
+
+  /* We always treat the cdr as a strong pointer. */
   om(g, s->u.cons.cdr);
 }
 
@@ -72,6 +74,8 @@ struct sexpr *mk_weak_cons(IC *ic, struct sexpr * car, struct sexpr * cdr) {
   ret->t = CONS;
   ret->u.cons.car = car;
   ret->u.cons.cdr = cdr;
+  ret->u.cons.proc_cache = ic->g_nil;
+  ret->u.cons.tree_cache = ic->g_nil;
   return ret;
 }
 

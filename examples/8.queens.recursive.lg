@@ -21,3 +21,5 @@ to 8.queens.helper :n :sofar
     ]
 end
 
+8.queens
+bye

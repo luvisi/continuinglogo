@@ -38,34 +38,10 @@ void *ic_xmalloc(IC *ic, size_t size, pointer_iterator marker) {
     return ret;
 }
 
-/* Compares two NAME objects.
-   Two NAME objects are the same if they both refer to the same SYMBOL
-   object.
- */
-int name_eq(sexpr *a, sexpr *b) {
-    struct symbol *syma, *symb;
-
-    if(a == NULL || b == NULL)
-        return 0;
-
-    if(a->t == NAME)
-        syma = a->u.name.symbol;
-    else
-        return 0;
-
-    if(b->t == NAME)
-        symb = b->u.name.symbol;
-    else
-        return 0;
-
-    return syma == symb;
-}
-
 /* Do nothing.  Strings do not have any pointers to garbage collected
    objects.
  */
-void mark_cstring(GC *g, void *c,
-                  object_marker om, weak_pointer_registerer wpr) { }
+void mark_cstring(GC *g, void *c, object_marker om, weak_pointer_registerer wpr) {}
 
 /* Creates garbage collected copy of namestr if namehead is NULL and
    creates an unbound and uninterned name using mk_symbol and mk_name.
@@ -88,7 +64,7 @@ sexpr *new_name(IC *ic, char *namehead, char *namestr, int len) {
     symbol = mk_symbol(ic,
                        ic->g_unbound,  /* Unbound value */
                        ic->g_unbound,  /* Unbound function */
-                       ic->g_nil,  /* Empty function_source */
+                       ic->g_nil,      /* Empty function_source */
                        ic->g_nil,      /* Empty plist */
                        ic->g_nil,      /* Empty canonical name */
                        ic->g_nil,      /* Empty names list */
@@ -132,6 +108,17 @@ sexpr *find_or_create_name(IC *ic, sexpr *cname, char *namestr, int len) {
     return name;
 }
 
+/* Dan Bernstein hash function */
+static unsigned long djb2_hash(char *str, int count) {
+    unsigned long hash = 5381;
+    int i;
+
+    for(i = 0; i < count; i++)
+        hash = ((hash << 5) + hash) + (unsigned char)str[i]; /* hash * 33 + c */
+
+    return hash;
+}
+
 /* Intern a string.  Try to find a matching symbol with case insensitive
    comparison.
    If we find one, call find_or_create_name above to either get or
@@ -141,29 +128,38 @@ sexpr *find_or_create_name(IC *ic, sexpr *cname, char *namestr, int len) {
  */
   
 sexpr *intern_len(IC *ic, char *namehead, char *namestr, int len) {
-    sexpr *names = ic->name_list;
+    unsigned long hash = djb2_hash(namestr, len) % NAME_TABLE_HASH_BUCKETS;
+    sexpr *names = ic->name_table[hash];
     sexpr *name;
+    sexpr *ret;
+
+    protect(ic->g, namehead);
 
     while(!is_nil(ic, names)) {
         if(car(names)->t == NAME &&
            car(names)->u.name.length == len &&
-           !strncasecmp(namestr, car(names)->u.name.name, len))
-            return find_or_create_name(ic, car(names), namestr, len);
+           !strncasecmp(namestr, car(names)->u.name.name, len)) {
+            ret = find_or_create_name(ic, car(names), namestr, len);
+            unprotect(ic->g);
+            return ret;
+        }
         names = cdr(names);
     }
 
     name = new_name(ic, namehead, namestr, len);
 
     /* This strange way of making a pair is necessary because 
-       ic->name_list can be changed by the garbage collector
+       ic->name_table can be changed by the garbage collector
        callback.  This way, we make no memory allocations between
-       reading and writing ic->name_list. */
+       reading and writing ic->name_table. */
       
     sexpr *pair = mk_weak_cons(ic, name, ic->g_nil);
-    STORE(ic->g, pair, cdr(pair), ic->name_list);
-    STORE(ic->g, NULL, ic->name_list, pair);
+    STORE(ic->g, pair, cdr(pair), ic->name_table[hash]);
+    STORE(ic->g, NULL, ic->name_table[hash], pair);
 
-    return name;
+    ret = name;
+    unprotect(ic->g);
+    return ret;
 }
 
 /* Wrapper function for calling intern_len when we have a null terminated
@@ -209,6 +205,7 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
     sexpr **tail = &ret;     /* tail will destructively modify either ret
                                 or the last cons cell in the list built
                                 up so far. */
+    sexpr *linking_object = NULL;
 
     protect_ptr(ic->g, (void **)&ret); /* We need to protect the pointer
                                           and not the value because the
@@ -234,10 +231,14 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
                Destructively modify the tail of the return value, and
                update tail to point to the cdr of the new last cons
                cell in the list. */
+            sexpr *binding = unsafe_cons(ic, name, args);
+            protect(ic->g, binding);
             STORE(ic->g,
-                  NULL,
+                  linking_object,
                   *tail,
-                  cons(ic, cons(ic, name, args), ic->g_nil));
+                  unsafe_cons(ic, binding, ic->g_nil));
+            unprotect(ic->g);
+            linking_object = *tail;
             tail = &(cdr(*tail));
             *paramsp = cdr(*paramsp);
             /* Set args to nil to terminate argument processing.
@@ -249,10 +250,14 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
                Same destructive modification of tail, and updating of
                tail to point to the cdr of the new last cons cell in the
                list. */
+            sexpr *binding = unsafe_cons(ic, name,  car(args));
+            protect(ic->g, binding);
             STORE(ic->g,
-                  NULL,
+                  linking_object,
                   *tail,
-                  cons(ic, cons(ic, name, car(args)), ic->g_nil));
+                  unsafe_cons(ic, binding, ic->g_nil));
+            unprotect(ic->g);
+            linking_object = *tail;
             tail = &(cdr(*tail));
             *paramsp = cdr(*paramsp);
             args = cdr(args);
@@ -262,7 +267,7 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
     }
 
     /* Tack on the ending. */
-    STORE(ic->g, NULL, *tail, ending);
+    STORE(ic->g, linking_object, *tail, ending);
 
     /* This undoes the protect_ptr above. */
     unprotect_ptr(ic->g);
@@ -271,8 +276,7 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
 
 
 /* Standard mark_* and mk_*.  See gc.h for details. */
-void mark_frame(GC *g, void *c,
-                object_marker om, weak_pointer_registerer wpr) {
+void mark_frame(GC *g, void *c, object_marker om, weak_pointer_registerer wpr) {
     frame *f = (frame *) c;
     om(g, f->parent);
     om(g, f->to_active);
@@ -301,7 +305,8 @@ frame *mk_frame(IC *ic, frame *parent,
     unprotect(ic->g);
     unprotect(ic->g);
     unprotect(ic->g);
-    unprotect(ic->g); unprotect(ic->g);
+    unprotect(ic->g);
+    unprotect(ic->g);
     unprotect(ic->g);
     f->parent = parent;
     f->to_active = parent;
@@ -360,15 +365,25 @@ int name_member(IC *ic, sexpr *s, sexpr *l) {
    to be shadowed.
 
    It returns a copy of bindings with every name in names removed.
+
+   Attempts to avoid consing by returning the "bindings" argument if
+   the first item is not being removed and if the recursive call did
+   not remove anything.
  */
 sexpr *remove_bindings(IC *ic, sexpr *names, sexpr *bindings) {
+    sexpr *subcall_result;
+
     if(is_nil(ic, bindings))
         return ic->g_nil;
     else if(name_member(ic, car(car(bindings)), names))
         return remove_bindings(ic, names, cdr(bindings));
+
+    subcall_result = remove_bindings(ic, names, cdr(bindings));
+
+    if(subcall_result == cdr(bindings))
+        return bindings;
     else
-        return cons(ic, car(bindings),
-                        remove_bindings(ic, names, cdr(bindings)));
+        return cons(ic, car(bindings), subcall_result);
 }
 
 /* Extend creates a copy of frame f extended with bindings from formalsp
@@ -388,6 +403,9 @@ frame *extend(IC *ic, frame *f, sexpr **formalsp, sexpr *values,
                           mk_bindings(ic,
                                       formalsp,
                                       values,
+                                      /* This protect() is necessary because
+                                         mk_bindings() does not protect its
+                                         arguments. */
                                       protect(ic->g,
                                               remove_bindings(ic,
                                                               *formalsp,
@@ -492,21 +510,24 @@ void reroot(IC *ic, frame *f) {
 void cleanup_name_table(GC *g) {
   struct interpreter *ic = (struct interpreter *) g->roots;
   sexpr *current;
+  int i;
 
-  while(!is_nil(ic, ic->name_list) && 
-        car(ic->name_list) == ic->g_nil) {
-      STORE(g, NULL, ic->name_list, cdr(ic->name_list));
-  }
+  for(i = 0; i < NAME_TABLE_HASH_BUCKETS; i++) {
+      while(!is_nil(ic, ic->name_table[i]) && 
+            car(ic->name_table[i]) == ic->g_nil) {
+          STORE(g, NULL, ic->name_table[i], cdr(ic->name_table[i]));
+      }
 
-  current = ic->name_list;
-  while(!is_nil(ic, current)) {
-    sexpr *next = cdr(current);
-    if(!is_nil(ic, next) && car(next) == ic->g_nil) {
-        while(!is_nil(ic, next) && car(next) == ic->g_nil)
-            next = cdr(next);
-        STORE(g, current, cdr(current), next);
-    }
-    current = cdr(current);
+      current = ic->name_table[i];
+      while(!is_nil(ic, current)) {
+        sexpr *next = cdr(current);
+        if(!is_nil(ic, next) && car(next) == ic->g_nil) {
+            while(!is_nil(ic, next) && car(next) == ic->g_nil)
+                next = cdr(next);
+            STORE(g, current, cdr(current), next);
+        }
+        current = cdr(current);
+      }
   }
 }
 
@@ -517,14 +538,18 @@ void cleanup_name_table(GC *g) {
    It is used to create the input to strtod() in to_number().
  */
 char *get_cstring(IC *ic, sexpr *e) {
+    char *ret;
+    protect(ic->g, e);
     if(e->t == NAME) {
         char *cp = ic_xmalloc(ic, e->u.name.length+1, mark_cstring);
         strncpy(cp, e->u.name.name, e->u.name.length);
         cp[e->u.name.length] = '\0';
-        return cp;
+        ret = cp;
     } else {
-        return NULL;
+        ret = NULL;
     }
+    unprotect(ic->g);
+    return ret;
 }
 
 /* Convert the argument into a name. */
@@ -553,9 +578,13 @@ sexpr *to_number(IC *ic, sexpr *e) {
     switch(e->t) {
         case NAME:
             s = get_cstring(ic, e);
-            d = strtod(s, &unparsed);
-            if(unparsed != s && *unparsed == '\0')
-                return mk_number(ic, d);
+            if(strcasecmp(s, "inf") &&
+               strcasecmp(s, "infinity") &&
+               strcasecmp(s, "nan")) {
+              d = strtod(s, &unparsed);
+              if(unparsed != s && *unparsed == '\0')
+                  return mk_number(ic, d);
+            }
             bad_argument(ic, e);
         case NUMBER:
             return e;
@@ -568,18 +597,27 @@ sexpr *to_number(IC *ic, sexpr *e) {
    Returns the pointer to the pointer to the portion of the property
    list for "name" starting with "prop".  Returns nil if prop is not on
    the property list.
+
+   linker is an optional void ** points to the beginning of the object
+   that the return value points into.  Only needed if the object will
+   be modified, link in remprop().
  */
 
-static sexpr **findprop(IC *ic, sexpr *name, sexpr *prop) {
+static sexpr **findprop(IC *ic, sexpr *name, sexpr *prop, void **linker) {
     sexpr **pl = &(to_name(ic, name)->u.name.symbol->properties);
+    void *linking_object = to_name(ic, name)->u.name.symbol;
 
     while(!is_nil(ic, *pl)) {
         if(car(*pl) == prop ||
            (name_eq(ic->n_caseignoredp->u.name.symbol->value, ic->n_true) &&
             name_eq(car(*pl), prop)))
             return pl;
+        linking_object = cdr(*pl);
         pl = &(cdr(cdr(*pl)));
     }
+
+    if(linker != NULL)
+        *linker = linking_object;
     return &ic->g_nil;
 }
 
@@ -591,7 +629,7 @@ void pprop(IC *ic, sexpr *name, sexpr *prop, sexpr *value) {
     name = to_name(ic, name);
     prop = to_name(ic, prop);
 
-    pl_tail = findprop(ic, name, prop);
+    pl_tail = findprop(ic, name, prop, NULL);
     if(is_nil(ic, *pl_tail)) {
         /* prop is not on the plist for name.  Add it at the
            beginning. */
@@ -612,7 +650,7 @@ sexpr *gprop(IC *ic, sexpr *name, sexpr *prop) {
     name = to_name(ic, name);
     prop = to_name(ic, prop);
 
-    pl_tail = findprop(ic, name, prop);
+    pl_tail = findprop(ic, name, prop, NULL);
     if(is_nil(ic, *pl_tail))
         return ic->g_nil;
     else
@@ -620,20 +658,21 @@ sexpr *gprop(IC *ic, sexpr *name, sexpr *prop) {
 }
 
 void remprop(IC *ic, sexpr *name, sexpr *prop) {
+    void *linker;
     sexpr **pl_tail;
     /* Make sure that name and prop are NAME's or can be
        turned into NAME's (numbers). */
     name = to_name(ic, name);
     prop = to_name(ic, prop);
 
-    pl_tail = findprop(ic, name, prop);
+    pl_tail = findprop(ic, name, prop, &linker);
     if(is_nil(ic, *pl_tail)) {
         eprint_sexpr(ic, name);
         eprintf(ic, " has no property named ");
         eprint_sexpr(ic, prop);
         throw_error(ic, ic->continuation->line);
     } else {
-        STORE(ic->g, NULL, *pl_tail, cdr(cdr(*pl_tail)));
+        STORE(ic->g, linker, *pl_tail, cdr(cdr(*pl_tail)));
     }
     
 }
@@ -712,8 +751,7 @@ struct symbol *mk_symbol(IC *ic,
    the items.  The extra pointer contains NULL so the marking
    function knows when to stop marking children.
  */
-static void mark_array_members(GC *g, void *c,
-                    object_marker om, weak_pointer_registerer wpr) {
+static void mark_array_members(GC *g, void *c, object_marker om, weak_pointer_registerer wpr) {
     sexpr **members = (sexpr **) c;
 
     for( ; *members; members++)
@@ -725,7 +763,7 @@ sexpr *array(IC *ic, int length, int origin) {
     int i;
     sexpr **members;
 
-    members = ic_xmalloc(ic, (length+1)*sizeof(sexpr **), mark_array_members);
+    members = ic_xmalloc(ic, (length+1)*sizeof(sexpr *), mark_array_members);
 
     for(i = 0; i < length; i++)
         members[i] = ic->g_nil;
@@ -765,11 +803,14 @@ int numberp(IC *ic, sexpr *e) {
     switch(e->t) {
         case NAME:
             str = get_cstring(ic, e);
-            strtod(str, &unparsed);
-            if(unparsed != str && *unparsed == '\0')
-                return 1;
-            else
-                return 0;
+            if(strcasecmp(str, "inf") &&
+               strcasecmp(str, "infinity") &&
+               strcasecmp(str, "nan")) {
+              strtod(str, &unparsed);
+              if(unparsed != str && *unparsed == '\0')
+                  return 1;
+            }
+            return 0;
         case NUMBER:
             return 1;
         default:

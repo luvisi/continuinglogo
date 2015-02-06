@@ -34,7 +34,7 @@
 #include "ttymodes.h"
 
 /* Argument descriptions for getopt_long() */
-char *optstring = "a:nisw:lh";
+char *optstring = "a:sniw:lh";
 static const struct option long_options[] = {
   { "gc-allocations-per-collection", required_argument, NULL, 'a' },
   { "gc-stop-the-world",             no_argument,       NULL, 's' },
@@ -60,7 +60,7 @@ void print_usage(char *progname) {
     fprintf(stderr, "\n");
     fprintf(stderr, "  -n, --no-init                               Don't read initialize.txt\n");
     fprintf(stderr, "\n");
-    fprintf(stderr, "  -l, --no-logo-init                          Don't read logoinitialize.txt\n");
+    fprintf(stderr, "  -i, --no-logo-init                          Don't read logoinitialize.txt\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "  -w, --gc-work-per-allocation=<n>            In incremental garbage\n");
     fprintf(stderr, "                                              collection mode, perfrom <n>\n");
@@ -164,9 +164,9 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
                     result = eval(ic,
                       cons(ic, ic->n_begin,
                                cons(ic, expr_line,
-                                        cons(ic, cons(ic, intern(ic, "create_logo_procedure"),
-                                                           cons(ic, cons(ic, ic->n_quote,
-                                                                             cons(ic, expr_line, ic->g_nil)),
+                                        cons(ic, cons(ic, ic->n_create_logo_procedure,
+                                                          cons(ic, cons(ic, ic->n_quote,
+                                                                            cons(ic, expr_line, ic->g_nil)),
                                                                     ic->g_nil)),
                                                   ic->g_nil))),
                       STOP_OK | NO_VALUE_OK);
@@ -181,10 +181,10 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
                     result = eval(ic,
                       cons(ic, ic->n_begin,
                                cons(ic, expr_line,
-                                        cons(ic, cons(ic, intern(ic, "create_logo_macro"),
-                                                           cons(ic, cons(ic, ic->n_quote,
-                                                                             cons(ic, expr_line, ic->g_nil)),
-                                                                    ic->g_nil)),
+                                        cons(ic, cons(ic, ic->n_create_logo_macro,
+                                                          cons(ic, cons(ic, ic->n_quote,
+                                                                            cons(ic, expr_line, ic->g_nil)),
+                                                                   ic->g_nil)),
                                                   ic->g_nil))),
                       STOP_OK | NO_VALUE_OK);
                 } else {
@@ -210,7 +210,7 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
                     sexpr *treeified = eval(ic,
                       cons(ic, ic->n_begin,
                                cons(ic, expr_line,
-                                        cons(ic, cons(ic, intern(ic, "treeify"),
+                                        cons(ic, cons(ic, ic->n_treeify,
                                                           cons(ic, cons(ic, ic->n_quote,
                                                                             cons(ic, expr, ic->g_nil)),
                                                                    ic->g_nil)),
@@ -292,7 +292,7 @@ int main(int argc, char *argv[], char *envp[]) {
     int read_logo_initialization_file = 1;
     int use_incremental_collection = 1;
     int run_logo = 1;
-    int work_per_allocation = 6;
+    int work_per_allocation = 3;
     struct sigaction sigint_action, sigquit_action;
 
 

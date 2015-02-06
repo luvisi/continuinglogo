@@ -1,0 +1,30 @@
+to foo :x
+ op :x
+end
+to bar :x
+ op (word foo :x :x)
+end
+
+if (bar 5) = 55 [print "Success] [print "Failure]
+
+to foo :x :y
+  op :x + :y
+end
+
+if (bar 5) = 10 [print "success] [print "Failure]
+
+.macro baz :x
+  op (list :x)
+end
+
+to quux :x
+  op (word baz :x :x)
+end
+
+if (quux 5) = 55 [print "Success] [print "Failure]
+
+.macro baz :x :y
+  op (list :x+:y)
+end
+
+if (quux 5) = 10 [print "Success] [print "Failure]

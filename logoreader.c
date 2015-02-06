@@ -37,7 +37,7 @@ static int fetch_char_from_file(logoreader *r) {
     int ret;
 
     if(r->char_la_valid) {
-        /* If we have a lookahead, makr the lookahead invalid and
+        /* If we have a lookahead, make the lookahead invalid and
            return the cached character. */
         r->char_la_valid = 0;
         ret = r->char_la;
@@ -152,10 +152,10 @@ static sexpr *gettoken(logoreader *r) {
   char *token_terminators; /* List of non-blanks that will terminate
                               the current token. */
 
-  /* Terminators for token that begin with a double quote. */
+  /* Terminators for tokens that begin with a double quote. */
   static char *quoted_terminators = "()[]{}";
 
-  /* Terminators for token that do not begin with a double quote. */
+  /* Terminators for tokens that do not begin with a double quote. */
   static char *non_quoted_terminators = "()[]{}+-*/=<>;";
 
   /* If there's a valid lookahead, use it. */
@@ -175,7 +175,14 @@ static sexpr *gettoken(logoreader *r) {
     if(ch == EOF) {
         return NULL;
     } else if(ch == ';') {
-      /* We have a comment.  Skip the rest of the line. */
+      /* We have a comment.  Skip the rest of the line.
+         Lines with comments can be continued, but the continuation
+         is not treated as a comment.  For example:
+             ? print 1 + ; comment ~  
+             ~ 2
+             3
+             ? 
+        */
       do {
         ch = r->char_reader(r);
       } while(ch != EOF && ch != '\n' && ch != '~');
@@ -349,9 +356,13 @@ sexpr *logoreadobj(logoreader *lr) {
 
   /* Check to see if it's a valid number. */
   possible_number = get_cstring(lr->ic, token);
-  number = strtod(possible_number, &unparsed);
-  if(unparsed != possible_number && *unparsed == '\0')
-    return mk_number(lr->ic, number);
+  if(strcasecmp(possible_number, "inf") &&
+     strcasecmp(possible_number, "infinity") &&
+     strcasecmp(possible_number, "nan")) {
+    number = strtod(possible_number, &unparsed);
+    if(unparsed != possible_number && *unparsed == '\0')
+      return mk_number(lr->ic, number);
+  }
 
   /* Return as is. */
   return token;
@@ -701,8 +712,7 @@ sexpr *keyp(logoreader *lr) {
    When the logoreader is being marked during garbage collection,
    mark the byte_buffer's.
  */
-static void mark_logoreader(GC *g, void *o,
-                            object_marker om, weak_pointer_registerer wpr) {
+static void mark_logoreader(GC *g, void *o, object_marker om, weak_pointer_registerer wpr) {
     logoreader *r = (logoreader *) o;
     om(g, r->bb);
     om(g, r->raw_line);
@@ -712,7 +722,7 @@ static void mark_logoreader(GC *g, void *o,
 logoreader *mk_logoreader(IC *ic) {
   logoreader *r = ic_xmalloc(ic, sizeof(logoreader), mark_logoreader);
   r->ic = ic;
-  r->bb = mk_byte_buffer(ic);
+  r->bb = mk_byte_buffer(ic);       /* For building tokens. */
   r->raw_line = mk_byte_buffer(ic); /* For logging the raw line during a
                                        READLINE. */
   r->logging_raw_line = 0;

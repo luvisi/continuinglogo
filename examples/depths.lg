@@ -14,7 +14,7 @@ depths
 end
 
 to depths
-collect_garbage
+gc
 (print nodes continuation_depth frame_depth)
 end
 
