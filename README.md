@@ -1,12 +1,6 @@
+
+
 ContinuingLogo
-==============
-
-A Logo interpreter with dynamic scope, shallow binding, tail call
-optimization, Lisp 1.5 style FUNARG's, and first class continuations.
-Mostly Ucblogo compatible.
-
-==============
-
 
 ContinuingLogo is a Logo interpreter that is mostly compatible with
 Ucblogo.  It successfully runs minimally modified versions of 
@@ -66,12 +60,7 @@ RUNNING
 
 Normal usage:
 
-    $ rlwrap clogo
-
-To run under valgrind:
-
-    $ /usr/local/bin/valgrind --track-origins=yes \
-                              --keep-stacktraces=alloc-and-free clogo
+    $ clogo
 
 EXAMPLES
 
@@ -129,3 +118,14 @@ LIMITATIONS AND INCOMPATIBILITIES COMPARED TO UCBLOGO
 
 * LOCAL will not work inside of templates run with APPLY, INVOKE, FOR, etc.
 
+* There is no PENREVERSE.
+
+* There is no PALETTE/SETPALETTE.  Color commands take rgb lists, with
+  each value ranging from 0-255.
+
+* There is no SETPENPATTERN/PENPATTERN.  (These are NOPs on several ucblogo
+  platforms as well.)
+
+* There is no SETSCRUNCH/SCRUNCH.
+
+* SAVEPICT/LOADPICT use PNG format.  There is no EPSPICT.

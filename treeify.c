@@ -45,10 +45,11 @@
     <expr list> = <nothing> |
                   <expr> <expr list>
     <expr> = <stop expr> |
-             <sum> [= <sum>]*  { return (= <sum> <sum>) }
+             <sum> [<relational operator> <sum>]*  { return (= <sum> <sum>) }
+    <relational operator> = '=' | '<' | '>' | '<=' | '>=' | '<>'
     <if expr> = 'IF' <expr> <run list> [<run list>]
     <stop expr> = 'STOP'
-    <run list> = <sentence> { return <expr list>(<sentence>) }
+    <run list> = '[' <expr list> ']' { return (begin <expr list>) }
     <sum> = <term> [ ('+'|'-') <term>]* { return (+|- <term> <term>) }
     <term> = <factor> [ ('*'|'/') <factor>]* { return (*|/ <factor> <factor>) }
     <factor> = '-' <factor> { return (- <factor>) } | 
@@ -69,7 +70,7 @@
     <name> = NAME { return NAME }
     <number> = NUMBER { return NUMBER }
     <sentence> = SENTENCE { return (quote SENTENCE) }
-    <sentence> = ARRAY { return (quote ARRAY) }
+    <array> = ARRAY { return (quote ARRAY) }
     <explicit procedure call> = '(' <name> <explicit tail>
     <explicit tail> = ')' |
                       <expr> <explicit tail>
@@ -81,7 +82,7 @@
 #include "list_memory.h"
 #include "interpreter.h"
 #include "global_environment.h"
-#include "gc.h"
+#include "pcgc.h"
 #include "io.h"
 
 static int expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
@@ -123,6 +124,12 @@ static int expr_list(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
         STORE(ic->g, NULL, *remaining, ic->g_nil);
         ret = 1;
         goto exit;
+    }
+
+    /* Catch unmatched )'s */
+    if(name_eq(car(input), ic->n_rparen)) {
+        eprintf(ic, "Unmatched )");
+        throw_error(ic, ic->continuation->line);
     }
 
 
@@ -175,6 +182,20 @@ static int expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     protect_ptr(ic->g, (void **) &sub_remaining);
     protect_ptr(ic->g, (void **) &sub_remaining2);
 
+    /* An EXPR must not start with any of +, -, *, /, or )
+       If we find one of these we need to force a failure in order
+       to make things like (foo+5) be parsed as an expression if
+       foo takes no arguments. */
+    if(is_nil(ic, input) ||
+       name_eq(car(input), ic->n_plus) ||
+       name_eq(car(input), ic->n_minus) ||
+       name_eq(car(input), ic->n_star) ||
+       name_eq(car(input), ic->n_slash) ||
+       name_eq(car(input), ic->n_rparen)) {
+        ret = 0;
+        goto exit;
+    }
+
     /* If we find a STOP, we succeeded and we're done. */
     if(stop_expr(ic, input, &sub_output, &sub_remaining)) {
         /* Our results are just the results from stop_expr(). */
@@ -205,10 +226,12 @@ static int expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
             ret = 0;
             goto exit;
         }
-        sub_output = cons(ic, car(sub_remaining),
+        STORE(ic->g, NULL,
+                     sub_output, 
+                     cons(ic, car(sub_remaining),
                               cons(ic, sub_output,
-                                       cons(ic, sub_output2, ic->g_nil)));
-        sub_remaining = sub_remaining2;
+                                       cons(ic, sub_output2, ic->g_nil))));
+        STORE(ic->g, NULL, sub_remaining, sub_remaining2);
     }
 
     STORE(ic->g, NULL, *output, sub_output);
@@ -234,7 +257,7 @@ static int stop_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     return 0;
 }
 
-/* An IF expression consists of IF or ELSEIF followed by one or two
+/* An IF expression consists of IF or IFELSE followed by one or two
    sentences.
    They must be literal sentences.
  */
@@ -253,7 +276,7 @@ static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     protect_ptr(ic->g, (void **) &sub_remaining2);
     protect_ptr(ic->g, (void **) &sub_remaining3);
 
-    /* If the input is nil, or doesn't start with IF or ELSEIF, or if
+    /* If the input is nil, or doesn't start with IF or IFELSE, or if
        we can't parse a condition or a run_list (the first literal
        sentence), then we fail. */
     if(is_nil(ic, input) || 
@@ -381,10 +404,12 @@ static int sum(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
             ret = 0;
             goto exit;
         }
-        sub_output = cons(ic, car(sub_remaining),
+        STORE(ic->g, NULL,
+                     sub_output,
+                     cons(ic, car(sub_remaining),
                               cons(ic, sub_output,
-                                       cons(ic, sub_output2, ic->g_nil)));
-        sub_remaining = sub_remaining2;
+                                       cons(ic, sub_output2, ic->g_nil))));
+        STORE(ic->g, NULL, sub_remaining, sub_remaining2);
     }
 
     STORE(ic->g, NULL, *output, sub_output);
@@ -416,7 +441,7 @@ static int term(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     }
 
     /* Once we've successfully parsed the first factor, we keep parsing
-       additional factor as long as the remaining input starts with a
+       additional factors as long as the remaining input starts with a
        multiplication (*) or division (/).
        Doing this in a loop, rather than with recursion, lets us make
        the operators associate to the left. */
@@ -427,10 +452,12 @@ static int term(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
             ret = 0;
             goto exit;
         }
-        sub_output = cons(ic, car(sub_remaining),
+        STORE(ic->g, NULL,
+                     sub_output,
+                     cons(ic, car(sub_remaining),
                               cons(ic, sub_output,
-                                       cons(ic, sub_output2, ic->g_nil)));
-        sub_remaining = sub_remaining2;
+                                       cons(ic, sub_output2, ic->g_nil))));
+        STORE(ic->g, NULL, sub_remaining, sub_remaining2);
     }
 
     STORE(ic->g, NULL, *output, sub_output);
@@ -550,13 +577,20 @@ static int factor(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     /* Parenthesized subexpression. */
     if(name_eq(car(input), ic->n_lparen)) {
         if(expr(ic, cdr(input), &sub_output, &sub_remaining)) {
-            if(!is_nil(ic, sub_remaining) &&
-               name_eq(car(sub_remaining), ic->n_rparen)) {
-                STORE(ic->g, NULL, *output, sub_output);
-                STORE(ic->g, NULL, *remaining, cdr(sub_remaining));
-                ret = 1;
-                goto exit;
+            if(is_nil(ic, sub_remaining)) {
+                eprintf(ic, "Unmatched (");
+                throw_error(ic, ic->continuation->line);
             }
+            if(!name_eq(car(sub_remaining), ic->n_rparen)) {
+                eprintf(ic, "Expected ), got ");
+                eprint_sexpr(ic, car(sub_remaining));
+                throw_error(ic, ic->continuation->line);
+            }
+
+            STORE(ic->g, NULL, *output, sub_output);
+            STORE(ic->g, NULL, *remaining, cdr(sub_remaining));
+            ret = 1;
+            goto exit;
         }
     }
 
@@ -583,14 +617,7 @@ static int factor(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 /* :FOO -> FOO
    In Lisp, FOO evaluates to the value of FOO. */
 static int colon_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
-    sexpr *sub_output = NULL, *sub_remaining = NULL;
-    sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
-
-    protect_ptr(ic->g, (void **) &sub_output);
-    protect_ptr(ic->g, (void **) &sub_output2);
-    protect_ptr(ic->g, (void **) &sub_remaining);
-    protect_ptr(ic->g, (void **) &sub_remaining2);
 
     if(is_nil(ic, input)) {
         ret = 0;
@@ -599,7 +626,7 @@ static int colon_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
     if(car(input)->t == NAME &&
        car(input)->u.name.length >= 1 &&
-       car(input)->u.name.name[0] == ':') {
+       car(input)->u.name.head[car(input)->u.name.start] == ':') {
         STORE(ic->g, NULL, *output, butfirst(ic, car(input)));
         STORE(ic->g, NULL, *remaining, cdr(input));
         ret = 1;
@@ -609,23 +636,12 @@ static int colon_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* "FOO -> (quote FOO) */
 static int quote_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
-    sexpr *sub_output = NULL, *sub_remaining = NULL;
-    sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
-
-    protect_ptr(ic->g, (void **) &sub_output);
-    protect_ptr(ic->g, (void **) &sub_output2);
-    protect_ptr(ic->g, (void **) &sub_remaining);
-    protect_ptr(ic->g, (void **) &sub_remaining2);
 
     if(is_nil(ic, input)) {
         ret = 0;
@@ -634,7 +650,7 @@ static int quote_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
     if(car(input)->t == NAME &&
        car(input)->u.name.length >= 1 &&
-       car(input)->u.name.name[0] == '"') {
+       car(input)->u.name.head[car(input)->u.name.start] == '"') {
         STORE(ic->g, NULL, *output,
                            cons(ic, ic->n_quote,
                                     cons(ic, butfirst(ic, car(input)),
@@ -647,10 +663,6 @@ static int quote_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -681,14 +693,7 @@ static int thingquote(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
 /* Utility procedure for matching a single name. */
 static int name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
-    sexpr *sub_output = NULL, *sub_remaining = NULL;
-    sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
-
-    protect_ptr(ic->g, (void **) &sub_output);
-    protect_ptr(ic->g, (void **) &sub_output2);
-    protect_ptr(ic->g, (void **) &sub_remaining);
-    protect_ptr(ic->g, (void **) &sub_remaining2);
 
     if(is_nil(ic, input)) {
         ret = 0;
@@ -705,10 +710,6 @@ static int name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -764,14 +765,7 @@ static int array_lit(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
 /* Parse a number. */
 static int number(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
-    sexpr *sub_output = NULL, *sub_remaining = NULL;
-    sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
-
-    protect_ptr(ic->g, (void **) &sub_output);
-    protect_ptr(ic->g, (void **) &sub_output2);
-    protect_ptr(ic->g, (void **) &sub_remaining);
-    protect_ptr(ic->g, (void **) &sub_remaining2);
 
     if(is_nil(ic, input)) {
         ret = 0;
@@ -788,10 +782,6 @@ static int number(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
-    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -834,11 +824,18 @@ static int explicit_procedure_call(IC *ic, sexpr *input, sexpr **output, sexpr *
             ret = 0;
             goto exit;
         }
+
+        /* "()" is a syntax error. */
+        if(name_eq(sub_output, ic->n_rparen)) {
+            eprintf(ic, "Empty parenthesis");
+            throw_error(ic, ic->continuation->line);
+        }
+
         /* If the name begins with a colon, we treat it as a subexpression
            and fail the attempt at recognizing this as an explicit procedure
            call. */
         if(sub_output->u.name.length > 0 &&
-           sub_output->u.name.name[0] == ':') {
+           sub_output->u.name.head[sub_output->u.name.start] == ':') {
             ret = 0;
             goto exit;
         }
@@ -911,8 +908,8 @@ static int explicit_tail(IC *ic, sexpr *input, sexpr **output, sexpr **remaining
     protect_ptr(ic->g, (void **) &sub_remaining2);
 
     if(is_nil(ic, input)) {
-        ret = 0;
-        goto exit;
+        eprintf(ic, "Unmatched (");
+        throw_error(ic, ic->continuation->line);
     }
 
     /* On a right parenthesis, we return the empty list. */
@@ -1021,7 +1018,8 @@ static int implicit_procedure_call(IC *ic, sexpr *input, sexpr **output, sexpr *
     }
 
     /* Make sure the operator is a name. */
-    if(!name(ic, input, &sub_output, &sub_remaining)) {
+    if(name_eq(car(input), ic->n_rparen) ||
+       !name(ic, input, &sub_output, &sub_remaining)) {
         ret = 0;
         goto exit;
     }

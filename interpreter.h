@@ -22,13 +22,13 @@
 #define INTERPRETER_H
 #include <stdio.h>
 #include <setjmp.h>
-#include "gc.h"
+#include "pcgc.h"
+#include "wxui.h"
 
 /* Bits in allowed_results */
 #define VALUE_OK    1 /* The current expression may return a value */
 #define NO_VALUE_OK 2 /* The current expression may return no value */
-#define VALUE_MASK  3 /* Bit mask for accessing just VALUE_OK and NO_VALUE_OK.
-                         Currently unused. */
+#define VALUE_MASK  3 /* Mask for accessing just VALUE_OK and NO_VALUE_OK. */
 
 #define OUTPUT_OK   4  /* The current procedure may OUTPUT a value */
 #define STOP_OK     8  /* The current procedure may STOP or run off the end */
@@ -41,6 +41,7 @@ struct interpreter {
     GC *g; /* Garbage Collector context */
 
     jmp_buf abort; /* setjmp() target for fatal errors. */
+    jmp_buf quit; /* setjmp() target for quiting the interpreter. */
 
     struct reader *r;      /* Lisp reader object */
     struct logoreader *lr; /* Logo reader object */
@@ -55,6 +56,26 @@ struct interpreter {
                                           next computed value */
 
     unsigned int allowed_results;    /* Bitfield.  See above. */
+
+    /* Procedure for printing output to the terminal or the
+       GUI window. */
+    void (*output_printer)(struct interpreter *ic,
+                           const char *format,
+                           va_list ap);
+
+    /* Procedures for interacting with the user.
+       Will be different in terminal mode versus the wxWidgets GUI. */
+    void (*read_from_user)(struct interpreter *ic);
+    void (*logoread_from_user)(logoreader *r);
+    void (*linemode)(logoreader *r);
+    void (*charmode_blocking)(logoreader *r);
+    void (*charmode_nonblocking)(logoreader *r);
+    void (*maybe_prompt)(logoreader *lr, const char *prompt);
+
+
+    /* Are we in terminal mode, as opposed to in the GUI? */
+    int terminal_mode;
+
     struct sexpr *output_error_info; /* Information constantly kept up to date
                                         so we can produce accurate error
                                         error messages when allowed_results
@@ -158,12 +179,18 @@ struct interpreter {
     struct sexpr *n_pause;
     struct sexpr *n_pause_caller;
     struct sexpr *n_caseignoredp;
+    struct sexpr *n_terminalp;
     struct sexpr *n_treeify;
     struct sexpr *n_treeify_cache_generation;
     struct sexpr *n_logoversion;
     struct sexpr *n_create_logo_procedure;
     struct sexpr *n_create_logo_macro;
     struct sexpr *n_template_number;
+    struct sexpr *n_paint;
+    struct sexpr *n_erase;
+    struct sexpr *n_wrap;
+    struct sexpr *n_window;
+    struct sexpr *n_fence;
     struct sexpr *n_q1;
     struct sexpr *n_q2;
     struct sexpr *n_q3;
@@ -181,6 +208,7 @@ typedef struct interpreter IC; /* Interpreter Context */
    context.  Used in interpreter.c to initialize them to interned
    values. */
 #define FOR_INTERPRETER_NAMES(MACRO) \
+    MACRO(empty) \
     MACRO(lambda) \
     MACRO(callcc) \
     MACRO(internal_callcc) \
@@ -241,12 +269,18 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(pause) \
     MACRO(pause_caller) \
     MACRO(caseignoredp) \
+    MACRO(terminalp) \
     MACRO(treeify) \
     MACRO(treeify_cache_generation) \
     MACRO(logoversion) \
     MACRO(create_logo_procedure) \
     MACRO(create_logo_macro) \
     MACRO(template_number) \
+    MACRO(paint) \
+    MACRO(erase) \
+    MACRO(wrap) \
+    MACRO(window) \
+    MACRO(fence) \
     MACRO(q1) \
     MACRO(q2) \
     MACRO(q3) \
@@ -265,6 +299,7 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(r) \
     MACRO(lr) \
     MACRO(frame) \
+    MACRO(root_frame) \
     MACRO(continuation) \
     MACRO(output_error_info) \
     MACRO(eof) \
@@ -342,12 +377,18 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(n_pause) \
     MACRO(n_pause_caller) \
     MACRO(n_caseignoredp) \
+    MACRO(n_terminalp) \
     MACRO(n_treeify) \
     MACRO(n_treeify_cache_generation) \
     MACRO(n_logoversion) \
     MACRO(n_create_logo_procedure) \
     MACRO(n_create_logo_macro) \
     MACRO(n_template_number) \
+    MACRO(n_paint) \
+    MACRO(n_erase) \
+    MACRO(n_wrap) \
+    MACRO(n_window) \
+    MACRO(n_fence) \
     MACRO(n_q1) \
     MACRO(n_q2) \
     MACRO(n_q3) \
@@ -362,7 +403,7 @@ typedef struct interpreter IC; /* Interpreter Context */
 
 /* Makes an interpreter.  gc_delay is how many allocations to perform
    between garbage collections when in stop the world mode. */
-IC *mk_interpreter(int gc_delay);
+IC *mk_interpreter(int gc_delay, gc_creator creator, int terminal_mode);
 
 /* Frees up the interpreter and all garbage collected objects created
    during interpretation. */
@@ -376,9 +417,7 @@ struct sexpr *eval(IC *ic, struct sexpr *expr, int top_allowed_results);
    Lots of information gets thrown away by tail call optimization. */
 void print_stacktrace(IC *ic);
 
-/* Finds information about an operator.  Not ordinarily used outside of
-   interpreter.c.  It is only here because treeify uses this to figure out
-   the arity of operators. */
+/* Finds information about an operator. */
 int get_apply_parts(IC *ic,
                     struct sexpr *e,
                     struct sexpr **procp,
@@ -410,11 +449,14 @@ void bad_argument(IC *ic, struct sexpr *arg);
 
 /* Used as a flag to allow signal handlers to communicate to the interpreter
    that interpretation needs to be terminated. */
-extern int interrupted;
+extern volatile int interrupted;
 
 /* Used as a flag to allow signal handlers to communicate to the interpreter
    that interpretation needs to be paused. */
-extern int paused;
+extern volatile int paused;
+
+/* Used to control access to interrupted and paused. */
+extern wxMutex signalLocker;
 
 #endif
 

@@ -29,16 +29,20 @@
 /* Like printf, but prints to the current output FILEP.
    Only prints to the dribble file if we are printing to the
    terminal. */
-void lprintf(IC *ic, char *format, ...)
+void lprintf(IC *ic, const char *format, ...)
 #ifdef __GNUC__
 __attribute__ ((format (printf, 2, 3)))
 #endif
 ;
 
+/* Output printers, assigned to ic->output_printer depending on
+   whether we are using wxWidgets or a terminal interface. */
+void wx_vprintf(IC *ic, const char *format, va_list ap);
+void terminal_vprintf(IC *ic, const char *format, va_list ap);
 
 /* The terminal printing function. */
 /* Always prints to terminal and to the dribble file if there is one. */
-void tprintf(IC *ic, char *format, ...)
+void tprintf(IC *ic, const char *format, ...)
 #ifdef __GNUC__
 __attribute__ ((format (printf, 2, 3)))
 #endif
@@ -47,7 +51,7 @@ __attribute__ ((format (printf, 2, 3)))
 /* The error printing function. */
 /* Prints to ic->error_byte_buffer to add to an error that will
    be thrown. */
-void eprintf(IC *ic, char *format, ...)
+void eprintf(IC *ic, const char *format, ...)
 #ifdef __GNUC__
 __attribute__ ((format (printf, 2, 3)))
 #endif

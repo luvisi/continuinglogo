@@ -2,7 +2,7 @@
 If you wish to understand how this interpreter works, here is the recommended
 order in which to read the different files.
 
-Read gc.h
+Read pcgc.h
     This describes how to use the garbage collector.  The garbage collector
     is independent, and does not know anything about the structure of the
     rest of the interpreter.
@@ -10,7 +10,7 @@ Read gc.h
     However, the interface for the garbage collector has a deep and 
     pervasive impact on the design of the rest of the program.
 
-Optional: Read gc.c
+Optional: Read ms_gc.c
     If you want to understand how the garbage collector works.  You do not
     need to know this in order to understand the rest of the program, but
     you do need to understand the garbage collector interface from gc.h.
@@ -111,6 +111,45 @@ Read treeify.h
         input (if it succeeded)
 
         The remaining unparsed input (if it succeeded)
+
+Read wxui.h/wxui.cpp
+    This is the code for the GUI.  The interpreter thread sends messages
+    to the GUI thread by posting wxWidgets events to the ContinuingLogoApp
+    object.  The GUI thread sends messages to the interpreter thread by:
+        Posting conditions to the turtleCondition global condition variable
+        Sending strings in the StringQueue queue
+        Sending edited chunks of text in the StringQueue editedQueue
+        Sending numbers in the NumberQueue numberQueue
+    The GUI thread uses NO garbage collected memory.  It does not allocate
+    or access ANY memory handled by the garbage collector.
+    To start up:
+        main() in main.c calls wxEntry()
+        wxWidgets creates a ContinuingLogoApp object
+        wxWidgets calls ContinuingLogoApp::OnInit() on the object.
+        OnInit:
+            sets up the GUI
+            binds events to event handlers
+            starts the interpreter thread by creating an InterpreterThread
+                object and calling Run() on it.
+            starts the audio thread by creating an AudioThread
+                object and calling Run() on it.
+        AudioThread::Run() calls AudioThread::Entry(), which:
+            watches its input queue and responds to commands
+            synthesizes audio
+        InterpreterThread::Run() calls InterpreterThread::Entry(), which:
+            calls wxstart_logo() in main.c
+
+Read turtles.h/turtles.cpp
+    Turtles receive ALL of their commands and perform ALL of their
+    actions within the GUI thread.  This is necessary because
+    xlib is not thread safe and Windows only lets you access GUI
+    objects from the thread that created them.
+
+Read audio.h/audio.cpp
+    The synthesizer thread is started by the GUI thread, but it receives
+    all of its commands directly from the interpreter thread via the
+    AudioCommandQueue AudioCommands, and sends replies back to the
+    interpreter via the AudioResponseQueue AudioResponses.
 
 Look over global_environment.c
     This contains the initialization of the global environment.

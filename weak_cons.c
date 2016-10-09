@@ -38,39 +38,39 @@ void mark_weak_cons(GC *g, void *c, object_marker om, weak_pointer_registerer wp
   if(s->u.cons.car != NULL) {
     if(s->u.cons.car->t != NAME) {
         /* If the car doesn't point to a name, just mark it. */
-        om(g, s->u.cons.car);
+        om(g, (void **) &s->u.cons.car);
     } else if(s->u.cons.car->u.name.symbol->value != ic->g_unbound  ||
               s->u.cons.car->u.name.symbol->function != ic->g_unbound  ||
               !is_nil(ic, s->u.cons.car->u.name.symbol->properties)) {
         /* If the name contains a value, a procedure, or a property list
            then we treat the car as a strong pointer and mark it. */
-        om(g, s->u.cons.car);
+        om(g, (void **) &s->u.cons.car);
     } else {
         /* Otherwise, we treat the car as a weak pointer.
            If this name is referenced from elsewhere in the program,
            like from a print statement, it will still get marked and will
            not be collected.  However, if this is the only place from which
            it is referenced, it will be collected and the car of this
-           weak_cons will be reset to ic->g_unbound. */
+           weak_cons will be reset to ic->g_nil. */
         wpr(g, (void **)&s->u.cons.car);
     }
   }
 
   /* We always treat the cdr as a strong pointer. */
-  om(g, s->u.cons.cdr);
+  om(g, (void **) &s->u.cons.cdr);
 }
 
 /* This is just like mk_cons except that it uses mark_weak_cons instead of
    mark_cons.  In fact, the resulting cell is even tagged CONS so that it
    will look normal to the rest of the program.
  */
-struct sexpr *mk_weak_cons(IC *ic, struct sexpr * car, struct sexpr * cdr) {
+struct sexpr *mk_weak_cons(IC *ic, struct sexpr *car, struct sexpr *cdr) {
   struct sexpr *ret;
-  protect(ic->g, car);
-  protect(ic->g, cdr);
+  protect_ptr(ic->g, (void **) &car);
+  protect_ptr(ic->g, (void **) &cdr);
   ret = (struct sexpr *)ic_xmalloc(ic, sizeof(struct sexpr), mark_weak_cons);
-  unprotect(ic->g);
-  unprotect(ic->g);
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
   ret->t = CONS;
   ret->u.cons.car = car;
   ret->u.cons.cdr = cdr;

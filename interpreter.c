@@ -18,13 +18,20 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <wx/wxprec.h>
+#ifndef WX_PRECOMP
+    #include <wx/wx.h>
+#endif
+
+
 #include "list_memory.h"
-#include "gc.h"
+#include "pcgc.h"
 #include "interpreter.h"
 #include "global_environment.h"
 #include "reader.h"
 #include "logoreader.h"
 #include "io.h"
+#include "audio.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,13 +45,17 @@
  */
 enum error_type { NO_ERROR = 0, CATCHABLE_ERROR, FATAL_ERROR };
 
-/* Used as a way for the SIGINT handler to communicate to the interpreter
-   that the user pressed control-c. */
-int interrupted = 0;
+/* Used as a way for the SIGINT handler and the GUI to communicate to
+   the interpreter that the user pressed control-c. */
+volatile int interrupted = 0;
 
-/* Used as a way for the SIGINT handler to communicate to the interpreter
-   that the user pressed control-\. */
-int paused = 0;
+/* Used as a way for the SIGINT handler and the GUI to communicate to
+   the interpreter that the user pressed control-\. */
+volatile int paused = 0;
+
+/* Used to control access to interrupted and paused by the GUI and
+   interpreter threads. */
+wxMutex signalLocker;
 
 /* Marks the root set (the interpreter context).
    The higher order macro is so that the long lists of structure
@@ -56,20 +67,20 @@ void mark_interpreter(GC *g, void *c, object_marker om, weak_pointer_registerer 
 
     IC *ic = (IC *) c;
 
-#define MARK_INTERPRETER_FIELD(field) om(ic->g, ic->field);
+#define MARK_INTERPRETER_FIELD(field) om(ic->g, (void **) &ic->field);
 
     FOR_INTERPRETER_FIELDS(MARK_INTERPRETER_FIELD)
 
     for(i = 0; i < NAME_TABLE_HASH_BUCKETS; i++)
-        om(ic->g, ic->name_table[i]);
+        om(ic->g, (void **) &ic->name_table[i]);
 }
 
 /* Create an interpreter context. */
-IC *mk_interpreter(int gc_delay) {
+IC *mk_interpreter(int gc_delay, gc_creator creator, int terminal_mode) {
     IC *ic = (IC *) malloc(sizeof(IC));
     if(ic == NULL) {
         fprintf(stderr, "Out of memory!\n");
-        exit(EXIT_FAILURE);
+        return NULL;
     }
 
     /* The new garbage collector will not attempt to collect garbage
@@ -78,10 +89,12 @@ IC *mk_interpreter(int gc_delay) {
        without worrying about a garbage collection running whle some
        of them are uninitialized.
      */
-    GC *g = create_gc(mark_interpreter, ic, gc_delay);
+    GC *g = creator(mark_interpreter, ic, sizeof(*ic), gc_delay);
+
     if(g == NULL) {
         fprintf(stderr, "Out of memory!\n");
-        exit(EXIT_FAILURE);
+        free(ic);
+        return NULL;
     }
 
     ic->g = g;
@@ -108,9 +121,9 @@ IC *mk_interpreter(int gc_delay) {
     ic->output = mk_filep(ic, stdout);
     ic->output_name = ic->g_nil;
 
-    /* The input file is stdin by default, which is refered to in
+    /* The input is from the user by default, which is refered to in
        Logo programs as the empty list [] */
-    ic->input = mk_filep(ic, stdin);
+    ic->input = mk_filep(ic, NULL);
     ic->input_name = ic->g_nil;
 
     /* The dribble file gets a transcript of everything written to the
@@ -214,6 +227,8 @@ IC *mk_interpreter(int gc_delay) {
     ic->n_q9              = intern(ic, "?9");
     ic->n_q10             = intern(ic, "?10");
 
+    ic->terminal_mode = terminal_mode;
+
     /* This adds all of the primitive procedures. */
     initialize_global_environment(ic);
 
@@ -236,7 +251,7 @@ void free_interpreter(IC *ic) {
 sexpr *reverse(IC *ic, sexpr *l) {
     sexpr *ret = ic->g_nil;
 
-    protect_ptr(ic->g, (void *)&ret);
+    protect_ptr(ic->g, (void **)&ret);
 
     while(!is_nil(ic, l)) {
         STORE(ic->g, NULL, ret, unsafe_cons(ic, car(l), ret));
@@ -258,7 +273,7 @@ int length(IC *ic, sexpr *e) {
 
     if(!is_nil(ic, e)) {
         fprintf(stderr, "Malformed argument to length!\n");
-        exit(EXIT_FAILURE);
+        longjmp(ic->quit, 1); 
     }
 
     return len;
@@ -274,6 +289,10 @@ int length(IC *ic, sexpr *e) {
       The MACRO, if any, which is a marker that this operator is a macro.
 
       The actual operator which will be applied to the arguments.
+
+      print_errors can be set to 1 to enable printing an error if we don't
+      find anything.  This is set to 0 in situations where it isn't
+      necessarily an error to find nothing, such as in PROCEDUREP.
  */
 int get_apply_parts(IC *ic,
                     sexpr *e,
@@ -327,7 +346,7 @@ int get_apply_parts(IC *ic,
     }
 }
 
-/* Given an argument list, figures out the minimum, default, and
+/* Given a lambda expression, figures out the minimum, default, and
    maximum number of arguments for the procedure.
  */
 void arg_counts(IC *ic, sexpr *e, int *minp, int *defp, int *maxp) {
@@ -464,6 +483,15 @@ void didnt_output(IC *ic, sexpr *output_error_info) {
                                      manipulating the allowed behavior for
                                      expressions.
 
+                                     There is a special value, VALUE_MASK,
+                                     which contains both VALUE_OK and
+                                     NO_VALUE_OK.  It is used to preserve
+                                     the record of what an expression is
+                                     allowed to product while changing the
+                                     effects of STOP and OUTPUT in
+                                     upstack_outut and in during a procedure
+                                     call.
+
            ic->output_error_info     Information about the current line,
                                      procedure call waiting for arguments
                                      to be evaluated, and procedure
@@ -512,7 +540,7 @@ void didnt_output(IC *ic, sexpr *output_error_info) {
     different points, so I have not yet figured out how to standardize this
     as a macro or some such.
 
-    "Not returning a value" is implemented by returning an sexpr of
+    "Not returning a value" is implemented by returning a sexpr of
     type UNBOUND.  There is only one global object of this type in the
     interpreter, and it is stored in ic->g_unbound.
 
@@ -580,7 +608,6 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
 
     /* Evil hack to get the garbage collector back into a sane state
        after an error exit.  */
-    int stored_protect_count = ic->g->protect_count;
     int stored_protect_ptr_count = ic->g->protect_ptr_count;
 
     /* Set at eval: and apply:.  Used to figure out whether to restore
@@ -590,19 +617,20 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
 
     /* Error handling.  You can skip this part on first reading. */
 
-    enum error_type error_type;
-    error_type = setjmp(ic->abort);
-    if(error_type != NO_ERROR) {
+    enum error_type error_returned;
+    error_returned = (error_type) setjmp(ic->abort);
+    if(error_returned != NO_ERROR) {
         /* throw_error() jumps back here when an evaluation
            is being aborted.
-           Reset the protection counts in the garbage collector, return
-           no value, and jump into the handler for RETURN_C continuations.
+           Reset the protection counts in the garbage collector, prepare
+           to return no value.
+           If the error isn't caught, then later on we will jump into
+           the handler for RETURN_C continuations to terminate evaluation.
          */
-        ic->g->protect_count = stored_protect_count;
         ic->g->protect_ptr_count = stored_protect_ptr_count;
         STORE(ic->g, NULL, value, ic->g_unbound);
 
-        if(error_type == CATCHABLE_ERROR) {
+        if(error_returned == CATCHABLE_ERROR) {
             /* ERRACT is a list of instructions to run in the event of an
                error.
              */
@@ -633,14 +661,18 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
 
             if(ic->n_error_catcher->u.name.symbol->value != 
                ic->g_unbound) {
+                /* There's an error catcher to return to.
+                   (catch) in initialize.txt handles CATCH "ERROR ...
+                   by rebinding error_catcher to a continuation.
+                   This ugly mess chases down the pointers necessary to
+                   grab that continuation and return to it. */
                 struct continuation *catcher =
                     ic->n_error_catcher->
                         u.name.symbol->
                         value->
                         u.proc.proc->
                         u.continuation.parent;
-                /* There's an error catcher to return to.  Return to it
-                   with an unbound value */
+                /* Return to the continuation with an unbound value */
                 STORE(ic->g, NULL, value, ic->g_unbound);
                 STORE(ic->g, NULL, ic->continuation, catcher);
                 goto apply;
@@ -656,33 +688,62 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
 
 
     eval:
+        /* Shutdown the interpreter if wxWidgets is asking this thread
+           to die. */
+        if(!ic->terminal_mode && wxThread::This()->TestDestroy())
+            longjmp(ic->quit, 1); 
 
-        /* Handles Control-C. */
-        if(interrupted) {
-            /* The global interrupted can be set by a signal handler
-               to indicate that interpretation should terminate. */
-            interrupted = 0;
-            eprintf(ic, "User interrupt");
-            fatal_error(ic, ic->current_line);
-        }
+        {
+            signalLocker.Lock();
 
-        /* Handles Control-\ */
-        if(paused) {
-            sexpr *pause_call;
-            /* The user pressed control-\ */
-            paused = 0;
+            /* Handles Control-C. */
+            if(interrupted) {
+                /* The global interrupted can be set by a signal handler
+                   to indicate that interpretation should terminate. */
+                interrupted = 0;
+                eprintf(ic, "User interrupt");
+                signalLocker.Unlock();
 
-            pause_call = protect(ic->g, 
-                     cons(ic, ic->n_pause_caller, 
-                              cons(ic, cons(ic, ic->n_quote,
-                                                cons(ic, ic->current_line->u.line.procedure, ic->g_nil)),
-                                       ic->g_nil)));
-            STORE(ic->g, NULL,
-                  expr,
-                  cons(ic, ic->n_begin,
-                           cons(ic, pause_call,
-                                    cons(ic, expr, ic->g_nil))));
-            unprotect(ic->g);
+                /* We do not allow the program to catch errors generated
+                   from user interrupt, so the user can always terminate
+                   the program. */
+                fatal_error(ic, ic->current_line);
+            }
+
+            /* Handles Control-\ */
+            if(paused) {
+                sexpr *pause_call;
+                /* The user pressed control-\ */
+                paused = 0;
+
+                /* PAUSE_CALLER in logoinitialize.txt is a procedure that
+                   binds "PAUSED.PROCEDURE and calls PAUSE. 
+                   Here we construct a call to PAUSE_CALLER passing the
+                   currently executing procedure. */
+                pause_call =
+                         cons(ic, ic->n_pause_caller, 
+                                  cons(ic, cons(ic, ic->n_quote,
+                                                    cons(ic, ic->current_line->u.line.procedure, ic->g_nil)),
+                                           ic->g_nil));
+                protect_ptr(ic->g, (void **) &pause_call);
+
+                /* Construct a new expression that will first call PAUSE_CALLER
+                   and will then evaluate whatever expression we were about
+                   to evaluate before being paused.
+                   It looks something like:
+                       (begin (pause_caller '<procedure>) <expr>)
+                   where <procedure> is the procedure we are currently
+                   executing and <expr> is the expression we were about to
+                   evaluate. */
+                STORE(ic->g, NULL,
+                      expr,
+                      cons(ic, ic->n_begin,
+                               cons(ic, pause_call,
+                                        cons(ic, expr, ic->g_nil))));
+                unprotect_ptr(ic->g);
+            }
+
+            signalLocker.Unlock();
         }
 
         state = EVAL;
@@ -732,20 +793,28 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                    self evaluate no matter what ic->allowed_results says.
                    It is by returning LINE objects to a BEGIN_C continuation
                    that ic->current_line gets updated, so we want that to 
-                   happen no matter the context in which (begin ...) was
-                   called. */
+                   happen even though the LINE object will not be the last
+                   expression in the (begin) and VALUE_OK will not be set.
+
+                   This is also where we handle pausing before the execution
+                   of each line when a procedure is being stepped. */
                 if(expr->u.line.procedure->t == NAME &&
                    (expr->u.line.procedure->u.name.symbol->flags &
                     PROC_STEPPED)) {
                     /* If the procedure for this line is being stepped,
                        we print the line and pause for the user to
                        press return.  */
+                    tprintf(ic, " <<< ");
                     tprint_sexpr(ic, expr->u.line.parsed_line);
                     tprintf(ic, " >>> ");
                     readrawline(ic->lr);
                 }
 
-                STORE(ic->g, NULL, value, expr);
+                if(ic->continuation->t == BEGIN_C)
+                    STORE(ic->g, NULL, value, expr);
+                else
+                    STORE(ic->g, NULL, value, ic->g_unbound);
+
                 goto apply;
 
             case NAME:
@@ -824,6 +893,7 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                                       ic->n_eval,
                                                       expr,
                                                       ic->current_line));
+                    tail = 0;
                     goto eval;
                 } else if(name_eq(car(expr), ic->n_callcc)) {
                     /* mk_continuation makes a CONTINUATION object, which
@@ -854,7 +924,7 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                 } else if(name_eq(car(expr), ic->n_if) ||
                           name_eq(car(expr), ic->n_ifelse)) {
                     /* Run the conditional expression as a non-tail call
-                       with OUTPUT_OK on.  We stash the current value for
+                       with OUTPUT_OK on.  We stash the current value of
                        ic->allowed_results in the IF_C continuation.
                        Down in the handler for IF_C continuations, the 
                        stored value will be passed on to the then_expr or
@@ -927,6 +997,11 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                             tail));
                         tail = 0;
                     }
+                    /* We rewrite the expression to be a plain old (begin)
+                       expression that will output to a BEGINRESULT_C
+                       continuation, which will output the empty list or
+                       a list containing the output of (begin), depending
+                       on whether the (begin) outputs a value. */
                     STORE(ic->g, NULL, expr, cons(ic, ic->n_begin, cdr(expr)));
                     STORE(ic->g, NULL, ic->continuation,
                           mk_beginresult_c(ic,
@@ -947,9 +1022,9 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                     /* (begin ...) runs each of its arguments.
                        Any argument other than the last one is not
                        allowed to return a value.
-                       The last argument is allowed to return a value if
-                       the entire (begin ...) expression is allowed to
-                       return a value.
+                       The last argument is allowed or required to return
+                       a value if the entire (begin ...) expression is
+                       allowed or required to return a value.
 
                        (beginnoresult ...) runs each of its arguments.
                        None of them are allowed to return a value.
@@ -961,7 +1036,7 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                        (STOP_OK is not set), then there is no way for the
                        last statement to successfully terminate.  Some
                        subexpression must OUTPUT a value for the procedure
-                       to succeed.  In this case, we create a
+                       to succeed.  To handle this, we create a
                        DIDNT_OUTPUT_C continuation to print an error
                        if the sequence ever terminates normally.
                        If the procedure makes a tail call via
@@ -978,8 +1053,8 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                        but OUTPUT and STOP return to the parent procedure's
                        caller.  allowed_results must have STOP_OK and
                        OUTPUT_OK adjusted to the appropriate values
-                       for the new output continuation.  Then the frame
-                       is mutated to adjust the output continuation.
+                       for the new output continuation.  A new frame
+                       is created with the adjusted output continuation.
                      */
 
                     if(ic->debug_eval) eprintf(ic, "    begin\n");
@@ -1000,9 +1075,11 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                             tail = 0;
                         }
                     } else if(name_eq(car(expr), ic->n_upstack_output)) {
-                        /* Create a new frame whose continuation and allowed_results are copied
-                           from the current frame's parent_continuation and parent_allowed_results.
-                           This causes OUTPUT or STOP to exit from our parent. */
+                        /* Create a new frame whose continuation and
+                           allowed_results are copied from the current
+                           frame's parent_continuation and
+                           parent_allowed_results.  This causes OUTPUT
+                           or STOP to exit from our parent. */
                         STORE(ic->g, NULL,
                               ic->frame,
                               mk_frame(ic,
@@ -1123,6 +1200,8 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                         (ic->allowed_results & OUTPUT_MASK) | 
                         (ic->allowed_results & OUTPUT_OK ? VALUE_OK : 0) |
                         (ic->allowed_results & STOP_OK ? NO_VALUE_OK : 0);
+                    STORE(ic->g, NULL, ic->output_error_info,
+                                       ic->frame->output_error_info);
                     STORE(ic->g, NULL, ic->continuation,
                                        ic->frame->continuation);
                     tail = 1;
@@ -1140,8 +1219,8 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                        from the current environment frame so that the
                        computed value will be returned to the calling
                        procedure and not to the enclosing expression.
-                       VALUE_OK is set so that we must get a value back
-                       from <expr>. */
+                       VALUE_OK is set and NO_VALUE_OK is unset so that
+                       we must get a value back from <expr>. */
                     if(!(ic->allowed_results & OUTPUT_OK)) {
                         /* We now know there's going to be an error 
                            of the type "You don't say what to do with ..."
@@ -1227,7 +1306,10 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                         }
 
     
-                        protect(ic->g, params);
+                        /* params must be protected because we just
+                           reassigned expr above, and may have made
+                           params unreachable. */
+                        protect_ptr(ic->g, (void **) &params);
                         STORE(ic->g, NULL, ic->continuation,
                               unsafe_mk_oper_c(ic,
                                                ic->continuation,
@@ -1238,7 +1320,7 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                                ic->output_error_info,
                                                tail,
                                                params));
-                        unprotect(ic->g);
+                        unprotect_ptr(ic->g);
                         ic->allowed_results =
                             (ic->allowed_results & OUTPUT_MASK) | VALUE_OK;
                         STORE(ic->g, NULL, ic->output_error_info,
@@ -1246,6 +1328,7 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                                           ic->n_internal_invoke,
                                                           expr,
                                                           ic->current_line));
+                        tail = 0;
                         goto eval;
                     }
                 }
@@ -1253,48 +1336,79 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
         }
 
     apply:
-        if(interrupted) {
-            /* The global interrupted can be set by a signal handler
-               to indicate that interpretation should terminate. */
-            interrupted = 0;
-            eprintf(ic, "User interrupt.\n");
-            fatal_error(ic, ic->continuation->line);
-        }
+        /* Shutdown the interpreter if wxWidgets is asking this thread
+           to die. */
+        if(!ic->terminal_mode && wxThread::This()->TestDestroy())
+            longjmp(ic->quit, 1); 
 
-        if(paused) {
-            sexpr *pause_call, *quote_call;
-            paused = 0;
+        {
+            signalLocker.Lock();
 
-            pause_call = protect(ic->g, 
-                     cons(ic, ic->n_pause_caller, 
-                              cons(ic, cons(ic, ic->n_quote,
-                                                cons(ic, ic->continuation->line->u.line.procedure, ic->g_nil)),
-                                       ic->g_nil)));
-            if(value == ic->g_unbound) {
-                quote_call = cons(ic, ic->n_begin, ic->g_nil);
-            } else {
-                quote_call = cons(ic, ic->n_quote,
-                                      cons(ic, value, ic->g_nil));
+            if(interrupted) {
+                /* The global interrupted can be set by a signal handler
+                   to indicate that interpretation should terminate. */
+                interrupted = 0;
+                eprintf(ic, "User interrupt.\n");
+                signalLocker.Unlock();
+                fatal_error(ic, ic->continuation->line);
             }
 
-            STORE(ic->g, NULL,
-                  expr,
-                  cons(ic, ic->n_begin,
-                           cons(ic, pause_call,
-                                    cons(ic, quote_call, ic->g_nil))));
-            unprotect(ic->g);
+            if(paused) {
+                sexpr *pause_call, *quote_call;
+                paused = 0;
 
-            ic->allowed_results =
-                (ic->continuation->allowed_results & OUTPUT_MASK) |
-                VALUE_OK | NO_VALUE_OK;
-            STORE(ic->g, NULL, ic->output_error_info,
-                               ic->continuation->output_error_info);
-            STORE(ic->g, NULL, ic->current_line, ic->continuation->line);
-            tail = ic->continuation->tail;
-            STORE(ic->g, NULL, ic->frame, ic->continuation->frame);
-            reroot(ic, ic->frame);
-            /* Keep the same continuation. */
-            goto eval;
+                /* Construct the instruction to run PAUSE_CALLER.
+                   We take the procedure name from the continuation because
+                   the value in ic->current_line may be stale here.
+                   Construct (PAUSE_CALLER (quote <procedure name>)) */
+                pause_call =
+                         cons(ic, ic->n_pause_caller, 
+                                  cons(ic, cons(ic, ic->n_quote,
+                                                    cons(ic, ic->continuation->line->u.line.procedure, ic->g_nil)),
+                                           ic->g_nil));
+                protect_ptr(ic->g, (void **) &pause_call);
+
+                /* Something was about to be returned to some continuation.
+                   Once we're done pausing, that same something should
+                   be returned to that same continuation.
+                   We do this by constructing an expression that will
+                   return that something. */
+                if(value == ic->g_unbound) {
+                    /* If that something is ic->g_unbound, then we
+                       construct (begin) which will return nothing. */
+                    quote_call = cons(ic, ic->n_begin, ic->g_nil);
+                } else {
+                    /* Otherwise, we construct (quote <something>) */
+                    quote_call = cons(ic, ic->n_quote,
+                                          cons(ic, value, ic->g_nil));
+                }
+
+                /* The new expression to run is either:
+                       (begin (pause <procedure name>) (begin))
+                   Or:
+                       (begin (pause <procedure name>) (quote <value>)) */
+                STORE(ic->g, NULL,
+                      expr,
+                      cons(ic, ic->n_begin,
+                               cons(ic, pause_call,
+                                        cons(ic, quote_call, ic->g_nil))));
+                unprotect_ptr(ic->g);
+
+                ic->allowed_results =
+                    (ic->continuation->allowed_results & OUTPUT_MASK) |
+                    VALUE_OK | NO_VALUE_OK;
+                STORE(ic->g, NULL, ic->output_error_info,
+                                   ic->continuation->output_error_info);
+                STORE(ic->g, NULL, ic->current_line, ic->continuation->line);
+                tail = ic->continuation->tail;
+                STORE(ic->g, NULL, ic->frame, ic->continuation->frame);
+                reroot(ic, ic->frame);
+                /* Keep the same continuation. */
+                signalLocker.Unlock();
+                goto eval;
+            }
+
+            signalLocker.Unlock();
         }
 
         state = APPLY;
@@ -1381,8 +1495,8 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                      value,
                                      ic->continuation->allowed_results,
                                      unsafe_mk_output_error_info(ic,
-                                                                 ic->g_nil,
-                                                                 ic->g_nil,
+                                                                 ic->continuation->output_error_info->u.output_error_info.wanting,
+                                                                 ic->continuation->output_error_info->u.output_error_info.to_blame,
                                                                  value),
                                      ic->continuation->tail,
                                      ic->continuation->u.begin_c.exprs));
@@ -1533,23 +1647,20 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                           ic->continuation->allowed_results,
                                           ic->continuation->output_error_info,
                                           ic->continuation->tail);
-                            /* protect() is needed because of the call
+                            /* protect_ptr() is needed because of the call
                                to reverse(). */
-                            protect(ic->g, econt);
+                            protect_ptr(ic->g, (void **) &econt);
                             sexpr *params = reverse(ic,
                                                     ic->continuation->u.oper_c.params);
 
                             /* Lisp macros don't have their arguments
                                evaluated.  Logo macros do.
-                               If we have a lisp macro, we set up
+                               For a lisp macro, we set up
                                the apply continuation with the
                                unevaluated arguments and jump into
                                the APPLY_C handler.
-                               If we have a Logo macro, we skip this
-                               and finish handling the arguments
-                               below just like with a normal procedure.
                                */
-                            protect(ic->g, params);
+                            protect_ptr(ic->g, (void **) &params);
                             STORE(ic->g, NULL, ic->continuation,
                                   unsafe_mk_apply_c(ic,
                                                     econt,
@@ -1562,14 +1673,18 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                                     value,
                                                     ic->g_nil,
                                                     params));
-                            unprotect(ic->g);
-                            unprotect(ic->g);
+                            unprotect_ptr(ic->g);
+                            unprotect_ptr(ic->g);
                             /* no_value tells APPLY_C to pretend that it did not
                                receive any input. */
                             STORE(ic->g, NULL, value, ic->g_no_value);
                             goto apply;
                         } else if(name_eq(macro->u.macro.macro_type,
                                           ic->n_logo_macro)) {
+                            /* We have a Logo macro.
+                               After continuation weirdness, we finish
+                               handling the arguments below just like
+                               with a normal procedure. */
                             /* Logo macros must still output a result
                                and are never tail calls. */
                             continuation *econt =
@@ -1581,9 +1696,9 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                           ic->continuation->allowed_results,
                                           ic->continuation->output_error_info,
                                           ic->continuation->tail);
-                            /* Make a dummy OPER_C to feed the rest of the
+                            /* Make an OPER_C to feed the rest of the
                                logic below. */
-                            protect(ic->g, econt);
+                            protect_ptr(ic->g, (void **) &econt);
                             STORE(ic->g, NULL, ic->continuation,
                                 unsafe_mk_oper_c(ic,
                                                  econt,
@@ -1594,7 +1709,7 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                                  ic->continuation->output_error_info,
                                                  0,
                                                  ic->continuation->u.oper_c.params));
-                            unprotect(ic->g);
+                            unprotect_ptr(ic->g);
                         } else {
                             eprintf(ic, "Invalid macro type: ");
                             eprint_sexpr(ic, macro->u.macro.macro_type);
@@ -1744,7 +1859,7 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                          ic->continuation->output_error_info,
                                          ic->continuation->tail,
                                          oper);
-                        protect(ic->g, trace_c);
+                        protect_ptr(ic->g, (void **) &trace_c);
                         STORE(ic->g, NULL,
                               ic->continuation,
                               unsafe_mk_apply_c(ic,
@@ -1758,7 +1873,7 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                                 ic->continuation->u.apply_c.oper,
                                                 ic->continuation->u.apply_c.exprs,
                                                 ic->continuation->u.apply_c.values));
-                        unprotect(ic->g);
+                        unprotect_ptr(ic->g);
 
                         tprint_sexpr(ic, cons(ic, oper, values));
                         tprintf(ic, "\n");
@@ -1803,6 +1918,10 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                             eprintf(ic, "\n");
                         }
 
+                        /* We set several members of ic so that the SUBR can access them
+                           or use them to generate errors. 
+                           We also need to reset the current frame since we may have
+                           just returned from a subroutine call. */
                         ic->allowed_results =
                             ic->continuation->allowed_results;
                         STORE(ic->g, NULL,
@@ -1813,8 +1932,12 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                         STORE(ic->g, NULL, ic->frame, ic->continuation->frame);
                         reroot(ic, ic->frame);
 
+                        /* current_primitive is used in generating errors. */
                         STORE(ic->g, NULL, ic->current_primitive,
                                            ic->continuation->u.apply_c.oper);
+
+                        /* Call the primitive via the function pointer in the SUBR
+                           object. */
                         STORE(ic->g, NULL, value, oper->u.subr.func(ic, values));
                         if(ic->debug_apply) {
                             eprintf(ic, "    Got back: ");
@@ -1831,6 +1954,8 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                             didnt_output(ic, ic->continuation->output_error_info);
                         }
 
+                        /* value is now set and ready to be returned to the parent 
+                           continuation. */
                         STORE(ic->g, NULL, ic->continuation, ic->continuation->parent);
                         goto apply;
                     } else if(oper->t == CONTINUATION) {
@@ -1847,6 +1972,10 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                         goto apply;
                     } else if(name_eq(ic->continuation->u.apply_c.oper,
                                       ic->n_internal_apply)) {
+                        /* (internal_apply) is the primitive version of (apply).
+                           It can only apply simple procedure types that are native
+                           to the interpreter.
+                           (apply) in initialize.txt adds the support for templates. */
                         sexpr *new_oper = car(values);
                         sexpr *proc, *funarg, *macro, *oper;
 
@@ -1879,10 +2008,14 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
 
                             /* Need to protect parent_continuation from
                                garbage collection during reverse(). */
-                            protect(ic->g, parent_continuation);
+                            protect_ptr(ic->g, (void **) &parent_continuation);
 
+                            /* Need to reverse the arguments back so they will be in
+                               the expected order when the continuation is applied. */
                             sexpr *reversed_values = reverse(ic, car(cdr(values)));
-                            protect(ic->g, reversed_values);
+                            protect_ptr(ic->g, (void **) &reversed_values);
+
+                            /* Macros must return a value, which will be eval'd. */
                             STORE(ic->g,
                                   NULL,
                                   ic->continuation,
@@ -1899,14 +2032,14 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                                     new_oper,
                                                     ic->g_nil,
                                                     reversed_values));
-                            unprotect(ic->g);
-                            unprotect(ic->g);
+                            unprotect_ptr(ic->g);
+                            unprotect_ptr(ic->g);
                         } else {
                             /* We are applying a non-macro.  Just set up the
                                procedure and arguments and jump back into
                                APPLY_C. */
                             sexpr *reversed_values = reverse(ic, car(cdr(values)));
-                            protect(ic->g, reversed_values);
+                            protect_ptr(ic->g, (void **) &reversed_values);
                             STORE(ic->g,
                                   NULL,
                                   ic->continuation,
@@ -1921,8 +2054,12 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                                     new_oper,
                                                     ic->g_nil,
                                                     reversed_values));
-                            unprotect(ic->g);
+                            unprotect_ptr(ic->g);
                         }
+
+                        /* Either way, we have already loaded the continuation with all
+                           of the arguments, so we will not send any values via value.
+                           ic->g_no_value is ignored by APPLY_C. */
                         STORE(ic->g, NULL, value, ic->g_no_value);
                         goto apply;
                     } else {
@@ -1984,8 +2121,8 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                          ic->continuation->output_error_info,
                                          ic->continuation->parent,
                                          ic->continuation->allowed_results,
-                                         ic->frame->continuation,
-                                         ic->frame->allowed_results));
+                                         ic->continuation->frame->continuation,
+                                         ic->continuation->frame->allowed_results));
                          
                             reroot(ic, ic->frame);
                         } else {
@@ -2005,6 +2142,16 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                                            ic->frame->allowed_results));
                             reroot(ic, ic->frame);
                         }
+                        /* We've now created the new frame and bound the actual arguments.
+                           We need to evaluate the default expressions, one at a time.
+                           Each one, after being evaluated, is returned to an OPTIONALS_C
+                           continuation, which has a list of the remaining formal arguments,
+                           including the remaining default expressions.  OPTIONALS_C, below,
+                           effectively loops over the default expressions.
+
+                           To get OPTIONALS_C started, we send it ic->g_no_value, telling
+                           it to ignore its input the first time and start evaluating any
+                           remaining default expressions. */
                         STORE(ic->g, NULL, value, ic->g_no_value);
                         STORE(ic->g, NULL,
                               ic->continuation,
@@ -2075,19 +2222,21 @@ sexpr *eval(IC *ic, sexpr *expr, int top_allowed_results) {
                     STORE(ic->g, NULL, ic->current_line, ic->continuation->line);
 
                     if(value != ic->g_no_value) {
+                        sexpr *value_list = cons(ic, value, ic->g_nil);
+                        protect_ptr(ic->g, (void **) &value_list);
                         STORE(ic->g, NULL,
                               ic->frame,
                               extend(ic,
                                      ic->frame,
                                      &formals,
-                                     protect(ic->g, cons(ic, value, ic->g_nil)),
+                                     value_list,
                                      ic->frame->procedure,
                                      ic->continuation->output_error_info,
                                      ic->frame->continuation,
                                      ic->frame->allowed_results,
                                      ic->frame->parent_continuation,
                                      ic->frame->parent_allowed_results));
-                        unprotect(ic->g);
+                        unprotect_ptr(ic->g);
                         reroot(ic, ic->frame);
                     }
 
@@ -2237,7 +2386,7 @@ void print_stacktrace(IC *ic) {
 #ifdef __GNUC__
 __attribute__((noreturn))
 #endif
-void interrupt_execution(IC *ic, sexpr *line, enum error_type error_type) {
+void interrupt_execution(IC *ic, sexpr *line, enum error_type error_to_return) {
     if(line != NULL) {
         eprintf(ic, " in ");
         eprint_sexpr(ic, line->u.line.procedure);
@@ -2251,7 +2400,7 @@ void interrupt_execution(IC *ic, sexpr *line, enum error_type error_type) {
         /* If there is no error catcher, we just print the accumulated
            error message. */
         tprintf(ic, "%s", get_cstring(ic, word_from_byte_buffer(ic, 
-           ic->error_byte_buffer->u.byte_bufferp.byte_buffer)));
+           ic->error_byte_buffer->u.byte_bufferp.bb)));
     } else {
         /* If there is an error catcher, which will be called
            by the error handler in eval(), we stash the accumulated
@@ -2260,14 +2409,14 @@ void interrupt_execution(IC *ic, sexpr *line, enum error_type error_type) {
               ic->n_error->u.name.symbol,
               ic->n_error->u.name.symbol->value,
               word_from_byte_buffer(ic,
-                  ic->error_byte_buffer->u.byte_bufferp.byte_buffer));
+                  ic->error_byte_buffer->u.byte_bufferp.bb));
     }
 
     /* Wipe out the error buffer so that it can receive later messages. */
-    clear_byte_buffer(ic->error_byte_buffer->u.byte_bufferp.byte_buffer);
+    clear_byte_buffer(ic->error_byte_buffer->u.byte_bufferp.bb);
 
     /* Jump to the error handler in eval(). */
-    longjmp(ic->abort, error_type);
+    longjmp(ic->abort, error_to_return);
 }
 
 #ifdef __GNUC__
@@ -2281,6 +2430,9 @@ void throw_error(IC *ic, sexpr *line) {
 __attribute__((noreturn))
 #endif
 void fatal_error(IC *ic, sexpr *line) {
+    AudioCommands.Post(AudioCommand(AudioCommand::TOOTCLEAR,
+                                    0,
+                                    AudioGenerator()));
     interrupt_execution(ic, line, FATAL_ERROR);
 }
 

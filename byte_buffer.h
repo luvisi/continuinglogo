@@ -31,7 +31,7 @@
 #ifndef BYTE_BUFFER_H
 #define BYTE_BUFFER_H
 
-#include "gc.h"
+#include "pcgc.h"
 #include "list_memory.h"
 
 #define BYTE_BUFFER_INCREMENT 2048

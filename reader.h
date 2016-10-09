@@ -28,7 +28,7 @@
 #ifndef READER_H
 #define READER_H
 #include <stdio.h>
-#include "gc.h"
+#include "pcgc.h"
 #include "interpreter.h"
 
 /* The maximum length of a single token.
@@ -64,6 +64,9 @@ typedef struct reader reader;
 
 /* Create a reader */
 reader *mk_reader(IC *ic);
+
+/* Read from the user in terminal mode. */
+void read_from_user_terminal(IC *ic);
 
 /* Set the reader to read from a file pointer. */
 void read_from_file(IC *ic, FILE *fp);

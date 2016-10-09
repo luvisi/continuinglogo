@@ -1,0 +1,14 @@
+
+To generate suppression listings:
+valgrind --track-origins=yes --leak-check=full \
+         --keep-stacktraces=alloc-and-free --show-reachable=no \
+         --error-limit=no --gen-suppressions=all \
+         --log-file=valgrind.log clogo
+
+To convert log into suppression file:
+./valgrind.parse.suppressions.sh valgrind.log > clogo.supp
+
+To use suppression file:
+valgrind --track-origins=yes --leak-check=full --show-reachable=no \
+         --keep-stacktraces=alloc-and-free --suppressions=clogo.supp clogo
+

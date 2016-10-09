@@ -20,7 +20,7 @@
 
 #ifndef LIST_MEMORY_H
 #define LIST_MEMORY_H
-#include "gc.h"
+#include "pcgc.h"
 #include "interpreter.h"
 
 #include <stdio.h>
@@ -43,8 +43,11 @@ typedef struct continuation continuation;
 
 struct frame {
     struct frame *parent; /* Parent frame from a higher level procedure call */
-    struct frame *to_active; /* Used for figuring out the path between the
-                                frame currently active and the one we wish
+    struct frame *to_active; /* This is NULL in the active frame.
+                                In all other frames, it points along a path
+                                towards the active frame.
+                                Used by reroot() to figure out the path between
+                                the frame currently active and the one we wish
                                 to make active. */
     sexpr *bindings; /* A list of bindings in this frame.  Can sometimes
                         share bindings with another frame that has the
@@ -86,7 +89,7 @@ frame *mk_frame(IC *ic, frame *parent,
    formal arguments for which values are provided in values.
  */
 frame *extend(IC *ic, frame *f, sexpr **formalsp, sexpr *values,
-              sexpr *output_error_info, sexpr *procedure,
+              sexpr *procedure, sexpr *output_error_info,
               struct continuation *continuation,
               int allowed_results,
               struct continuation *parent_continuation,
@@ -116,7 +119,7 @@ void reroot(IC *ic, frame *f);
 #define cdr(X) ((X)->u.cons.cdr)
 
 /* Function for interning a C string as a word. */
-sexpr *intern(IC *ic, char *name);
+sexpr *intern(IC *ic, const char *name);
 
 /* Function for interning a pointer + length as a word.
 
@@ -127,14 +130,14 @@ sexpr *intern(IC *ic, char *name);
    assumed to point into head somewhere.  The new word will point to 
    head for garbage collection purposes, and use name and len as is.
  */
-sexpr *intern_len(IC *ic, char *head, char *name, int len);
+sexpr *intern_len(IC *ic, const char *head, const char *name, unsigned int len);
 
 /* Creates garbage collected copy of namestr if namehead is NULL and
-   creates an unbound and uninternedsymbol using mk_symbol.  Should not
+   creates an unbound and uninterned symbol using mk_symbol.  Should not
    generally be used outside of list_memory.c.  Only here for one call
    in interpreter.c and one call in global_environment.c.
  */
-sexpr *new_name(IC *ic, char *namehead, char *namestr, int len);
+sexpr *new_name(IC *ic, const char *namehead, const char *namestr, unsigned int len);
 
 
 /* This is the garbage collection callback that removes cons cells from
@@ -268,7 +271,7 @@ sexpr *array(IC *ic, int length, int origin);
 sexpr *list_to_array(IC *ic, sexpr *l, int origin);
 
 
-/* Returns 1 if e is a number of a name that can be turned into a number.
+/* Returns 1 if e is a number or a name that can be turned into a number.
    Returns 0 otherwise. */
 int numberp(IC *ic, sexpr *e);
 

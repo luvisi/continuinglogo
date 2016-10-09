@@ -22,10 +22,13 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
-#include "gc.h"
+#include "pcgc.h"
 #include "list_memory.h"
 #include "reader.h"
 
+void read_from_user_terminal(IC *ic) {
+    read_from_file(ic, stdin);
+}
 
 /* This function is stored into r->char_reader when we are reading from
    a file. */
@@ -41,6 +44,10 @@ static int fetch_char_from_file(reader *r) {
 /* Set things up so that future calls to r->char_reader(r) will read from
    the file pointer fp. */
 void read_from_file(IC *ic, FILE *fp) {
+    if(fp == NULL) {
+        ic->read_from_user(ic);
+        return;
+    }
     reader *r = ic->r;
     r->ifp = fp;
     r->char_reader = fetch_char_from_file;
@@ -147,7 +154,7 @@ static char *gettoken(reader *r) {
     if((ch = r->char_reader(r)) == EOF)
         return NULL;
     if(strchr("()\'", ch) || isspace(ch)) {
-      /* We have found a whitespace, a parenthesis, or a single or double
+      /* We have found a whitespace, a parenthesis, or a single
          quote.  Put it back, null terminate the buffer, and return. */
       put_back_char(r, ch);
       r->buf[r->bufused] = '\0';
@@ -193,7 +200,7 @@ sexpr *readobj(IC *ic) {
       else {
           fprintf(stderr,
                   "Fatal error in lisp reader - this should never happen!\n");
-          exit(EXIT_FAILURE);
+          longjmp(ic->quit, 1);
       }
     
     sexpr *ret = cons(ic, quoter,
@@ -231,9 +238,10 @@ static sexpr *readlist(IC *ic) {
     return tmp;
   }
   putback_token(r, token);
-  first = protect(ic->g, readobj(ic)); /* Must force evaluation order */
+  first = readobj(ic); /* Must force evaluation order */
+  protect_ptr(ic->g, (void **) &first);
   sexpr *ret = cons(ic, first, readlist(ic));
-  unprotect(ic->g);
+  unprotect_ptr(ic->g);
   return ret;
 }
 
@@ -241,7 +249,7 @@ static sexpr *readlist(IC *ic) {
 static void mark_reader(GC *g, void *o, object_marker om, weak_pointer_registerer wpr) {}
 
 reader *mk_reader(IC *ic) {
-  reader *r = ic_xmalloc(ic, sizeof(reader), mark_reader);
+  reader *r = (reader *)ic_xmalloc(ic, sizeof(reader), mark_reader);
   r->token_la_valid = 0;
   return r;
 }

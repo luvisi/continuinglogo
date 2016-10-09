@@ -18,18 +18,188 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <wx/wxprec.h>
+#ifndef WX_PRECOMP
+    #include <wx/wx.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
 #include <unistd.h>
 #include <math.h>
-#include "gc.h"
+#include "pcgc.h"
 #include "list_memory.h"
 #include "logoreader.h"
 #include "io.h"
 #include "ttymodes.h"
 #include "global_environment.h"
+#include "wxui.h"
+
+static int fetch_char_from_file(logoreader *r);
+static int fetch_char_from_wx(logoreader *r);
+
+/* Are we reading from the user? */
+static int reading_from_user(logoreader *lr) {
+    if( (lr->char_reader == fetch_char_from_file &&
+         lr->ifp == stdin &&
+         isatty(fileno(stdin))) ||
+        lr->char_reader == fetch_char_from_wx)
+        return 1;
+    else
+        return 0;
+}
+
+void linemode_terminal(logoreader *lr) {
+  if(reading_from_user(lr)) {
+      if(tty_blocking(fileno(lr->ifp)) < 0) {
+         eprintf(lr->ic, "Error setting terminal to blocking mode");
+         throw_error(lr->ic, lr->ic->continuation->line);
+      }
+      if(tty_cooked(fileno(stdin)) < 0) {
+          eprintf(lr->ic, "Error setting terminal back to cooked mode");
+          throw_error(lr->ic, lr->ic->continuation->line);
+      }
+      lr->blocking = 1;
+    }
+}
+
+void charmode_blocking_terminal(logoreader *lr) {
+    if(reading_from_user(lr)) {
+        if(tty_blocking(fileno(lr->ifp)) < 0) {
+           eprintf(lr->ic, "Error setting terminal to blocking mode");
+           throw_error(lr->ic, lr->ic->continuation->line);
+        }
+        if(tty_cbreak(fileno(stdin)) < 0) {
+            eprintf(lr->ic, "Error setting terminal to cbreak mode");
+            throw_error(lr->ic, lr->ic->continuation->line);
+        }
+        lr->blocking = 1;
+    }
+}
+
+void charmode_nonblocking_terminal(logoreader *lr) {
+    if(reading_from_user(lr)) {
+        if(tty_nonblocking(fileno(lr->ifp)) < 0) {
+           eprintf(lr->ic, "Error setting terminal to nonblocking mode");
+           throw_error(lr->ic, lr->ic->continuation->line);
+        }
+        if(tty_cbreak(fileno(stdin)) < 0) {
+            eprintf(lr->ic, "Error setting terminal to cbreak mode");
+            throw_error(lr->ic, lr->ic->continuation->line);
+        }
+        lr->blocking = 0;
+    }
+}
+
+void logoread_from_user_terminal(logoreader *r) {
+    logoread_from_file(r, stdin);
+}
+
+void linemode_wx(logoreader *lr) {
+    wxCommandEvent *modeE = new wxCommandEvent(LINE_MODE);
+    wxTheApp->QueueEvent(modeE);
+    lr->blocking = 1;
+}
+
+void charmode_blocking_wx(logoreader *lr) {
+    wxCommandEvent *modeE = new wxCommandEvent(CHAR_MODE);
+    wxTheApp->QueueEvent(modeE);
+    lr->blocking = 1;
+}
+
+void charmode_nonblocking_wx(logoreader *lr) {
+    wxCommandEvent *modeE = new wxCommandEvent(CHAR_MODE);
+    wxTheApp->QueueEvent(modeE);
+    lr->blocking = 0;
+}
+
+static int fetch_char_from_wx(logoreader *r) {
+    int ret = 0;
+
+    if(r->char_la_valid) {
+        r->char_la_valid = 0;
+        return r->char_la;
+    } else if(r->source_string == NULL ||
+              r->source_string[r->source_position] == '\0') {
+        wxString s;
+        wxMessageQueueError res;
+        if(r->blocking) {
+            do {
+                res = wxGetApp().GetStringQueue()->ReceiveTimeout(100, s);
+                if(!r->ic->terminal_mode && wxThread::This()->TestDestroy())
+                    longjmp(r->ic->quit, 1);
+                signalLocker.Lock();
+                if(interrupted) {
+                    /* If the user pressed Ctrl-C, we need to throw an error.
+                    We throw a fatal error so the program cannot catch it and
+                    the user can always abort the program. */
+                    interrupted = 0;
+                    eprintf(r->ic, "User interrupt");
+                    r->ic->linemode(r);
+                    signalLocker.Unlock();
+                    fatal_error(r->ic, NULL);
+                }
+                if(paused) {
+                    res = wxMSGQUEUE_TIMEOUT;
+                    signalLocker.Unlock();
+                    break;
+                }
+                signalLocker.Unlock();
+            } while(res == wxMSGQUEUE_TIMEOUT);
+        } else {
+            res = wxGetApp().GetStringQueue()->ReceiveTimeout(0, s);
+        }
+
+        if(!r->ic->terminal_mode && wxThread::This()->TestDestroy())
+            longjmp(r->ic->quit, 1);
+
+        if(res == wxMSGQUEUE_TIMEOUT) {
+            ret = EOF;
+        } else if(res == wxMSGQUEUE_NO_ERROR) {
+            const char *cp = s.c_str();
+            STORE(r->ic->g,
+                  r,
+                  r->source_string,
+                  (char *) ic_xmalloc(r->ic,
+                                      strlen(cp) + 1,
+                                      mark_cstring));
+            strcpy(r->source_string, cp);
+            r->source_position = 0;
+            /* This assumes that source_string will never be
+               empty.  We know this because wxui.cpp always
+               adds a newline before sending us a string.
+               This is sloppy but it works. */
+            ret = r->source_string[r->source_position++];
+        }
+    } else {
+        ret = r->source_string[r->source_position++];
+    }
+
+    /* Characters read from the terminal must be copied to the dribble
+       file. */
+    if(ret != EOF &&
+       reading_from_user(r) &&
+       !is_nil(r->ic, r->ic->dribble_name)) {
+        fprintf(r->ic->dribble->u.filep.file, "%c", ret);
+    }
+
+    /* If we're logging the raw line, then we need to save the read
+       character to the raw_line byte_buffer.
+       This is used when defining Logo procedures. */
+    if(r->logging_raw_line)
+        add_to_byte_buffer(r->ic, r->raw_line, ret);
+
+    return ret;
+}
+
+void logoread_from_user_wx(logoreader *lr) {
+    lr->source_string = NULL;
+    lr->source_position = 0;
+    lr->char_reader = fetch_char_from_wx;
+    lr->char_la_valid = 0;
+}
 
 /* This is the function for reading a character when the source is
    a file. */
@@ -43,26 +213,23 @@ static int fetch_char_from_file(logoreader *r) {
         ret = r->char_la;
     } else {
         ret = getc(r->ifp);
+        signalLocker.Lock();
         if(interrupted) {
             /* If the user pressed Ctrl-C, we need to throw an error.
                We throw a fatal error so the program cannot catch it and
                the user can always abort the program. */
             interrupted = 0;
             eprintf(r->ic, "User interrupt");
-            if(r->ifp == stdin &&
-               isatty(fileno(stdin)))
-                if(tty_cooked(fileno(stdin)) < 0) {
-                    eprintf(r->ic, "Error setting terminal back to cooked mode");
-                    throw_error(r->ic, r->ic->continuation->line);
-                }
+            r->ic->linemode(r);
+            signalLocker.Unlock();
             fatal_error(r->ic, NULL);
         }
+        signalLocker.Unlock();
 
         /* Characters read from the terminal must be copied to the dribble
            file. */
         if(ret != EOF &&
-           r->ifp == stdin &&
-           isatty(fileno(stdin)) &&
+           reading_from_user(r) &&
            !is_nil(r->ic, r->ic->dribble_name)) {
             fprintf(r->ic->dribble->u.filep.file, "%c", ret);
         }
@@ -78,6 +245,10 @@ static int fetch_char_from_file(logoreader *r) {
 
 /* Set the input to come from a file. */
 void logoread_from_file(logoreader *lr, FILE *fp) {
+    if(fp == NULL) {
+        lr->ic->logoread_from_user(lr);
+        return;
+    }
     lr->ifp = fp;
     lr->char_reader = fetch_char_from_file;
     lr->char_la_valid = 0;
@@ -109,16 +280,6 @@ void logoread_from_string(logoreader *lr, char *source) {
     lr->char_la_valid = 0;
 }
 
-/* Are we reading from stdin? */
-static int reading_stdin(logoreader *lr) {
-    if(lr->char_reader == fetch_char_from_file &&
-       lr->ifp == stdin &&
-       isatty(fileno(stdin)))
-        return 1;
-    else
-        return 0;
-}
-
 /* Put back a character.  Store it in the lookahead and mark the
    lookahead as valid. */
 static void put_back_char(logoreader *r, int ch) {
@@ -138,10 +299,18 @@ static void putback_token(logoreader *r, sexpr *token) {
     r->token_la_valid = 1;
 }
 
-/* Print a prompt if reading from stdin. */
-static void maybe_prompt(logoreader *lr, char *prompt) {
-    if(reading_stdin(lr)) {
+/* Print a prompt if reading from user. */
+void maybe_prompt_terminal(logoreader *lr, const char *prompt) {
+    if(reading_from_user(lr)) {
         tprintf(lr->ic, "%s", prompt);
+    }
+}
+
+void maybe_prompt_wx(logoreader *lr, const char *prompt) {
+    if(reading_from_user(lr)) {
+        wxCommandEvent *setprompte = new wxCommandEvent(SET_PROMPT);
+        setprompte->SetString(wxString(prompt));
+        wxTheApp->QueueEvent(setprompte);
     }
 }
 
@@ -149,20 +318,23 @@ static void maybe_prompt(logoreader *lr, char *prompt) {
 /* Read a token. */
 static sexpr *gettoken(logoreader *r) {
   int ch;
-  char *token_terminators; /* List of non-blanks that will terminate
-                              the current token. */
+  const char *token_terminators; /* List of non-blanks that will terminate
+                                    the current token. */
 
   /* Terminators for tokens that begin with a double quote. */
-  static char *quoted_terminators = "()[]{}";
+  static const char *quoted_terminators = "()[]{}";
 
   /* Terminators for tokens that do not begin with a double quote. */
-  static char *non_quoted_terminators = "()[]{}+-*/=<>;";
+  static const char *non_quoted_terminators = "()[]{}+-*/=<>;";
 
   /* If there's a valid lookahead, use it. */
   if(r->token_la_valid) {
     r->token_la_valid = 0;
     return word_from_byte_buffer(r->ic, r->bb);
   }
+
+  /* Before reading a token, there are no escapes. */
+  r->token_escaped = 0;
 
   /* Empty the buffer. */
   clear_byte_buffer(r->bb);
@@ -192,7 +364,7 @@ static sexpr *gettoken(logoreader *r) {
         int ch2 = r->char_reader(r);
         if(ch2 == EOF) return NULL;
         if(ch2 == '\n') {
-            maybe_prompt(r, "~ ");
+            r->ic->maybe_prompt(r, "~ ");
             ch = r->char_reader(r);
         } else {
             put_back_char(r, ch2);
@@ -223,12 +395,15 @@ static sexpr *gettoken(logoreader *r) {
     }
 
     if(ch == '-' && r->last_break == BROKE_ON_SPACE) {
+        int ch2 = r->char_reader(r);
         /* Need to figure out whether this is a unary or binary minus.
            It is a unary minus if we last broke on a space and the next
            character is not a space. */
-        int ch2 = r->char_reader(r);
         /* If it's an EOF, just put it back for later processing. */
-        if(isspace(ch2)) {
+        if(isdigit(ch2) || ch2 == '.') {
+            ch = ch2;
+            goto skip_specials;
+        } else if(isspace(ch2)) {
             /* Space before and after - normal binary minus.
                Do nothing. */
         } else {
@@ -243,6 +418,10 @@ static sexpr *gettoken(logoreader *r) {
        minuses. */
     if(ch == '\n') {
         r->last_break = BROKE_ON_SPACE;
+    } else if(strchr("([{", ch)) {
+        /* Pretend we broke on a space when starting an enclosed
+           expression. */
+        r->last_break = BROKE_ON_SPACE;
     } else {
         int ch2 = r->char_reader(r);
         /* Don't worry about EOF.  Just put it back for later. */
@@ -255,6 +434,7 @@ static sexpr *gettoken(logoreader *r) {
 
     return word_from_byte_buffer(r->ic, r->bb);
   }
+  skip_specials:
 
   /* Tokens that begin with a quote will only break on spaces and
      parenthesis/brackets/braces.  This lets us enter things like "*
@@ -266,7 +446,7 @@ static sexpr *gettoken(logoreader *r) {
 
   for(;;) {
     if(strchr(token_terminators, ch) || isspace(ch) || ch == EOF) {
-        /* We found teh end of the token.  Mark whether we ended the
+        /* We found the end of the token.  Mark whether we ended the
            token on a space or a nonspace and return the token. */
         if(isspace(ch))
             r->last_break = BROKE_ON_SPACE;
@@ -275,12 +455,14 @@ static sexpr *gettoken(logoreader *r) {
         put_back_char(r, ch);
         return word_from_byte_buffer(r->ic, r->bb);
     } else if(ch == '|') {
+        /* There has been an escape.  Used to distinguish |[| from [ */
+        r->token_escaped = 1;
         /* Need to read characters until the next unescaped | */
         ch = r->char_reader(r);
         for(;;) {
             /* Prompt on newline, but include it in the token. */
             if(ch == '\n')
-                maybe_prompt(r, "| ");
+                r->ic->maybe_prompt(r, "| ");
 
             if(ch == EOF) {
                 break;
@@ -290,7 +472,7 @@ static sexpr *gettoken(logoreader *r) {
                    Prompt if it was a newline. */
                 ch = r->char_reader(r);
                 if(ch == '\n')
-                    maybe_prompt(r, "\\ ");
+                    r->ic->maybe_prompt(r, "\\ ");
 
                 if(ch == EOF) {
                     /* Do nothing. */
@@ -310,10 +492,12 @@ static sexpr *gettoken(logoreader *r) {
             }
         }
     } else if(ch == '\\') {
+        /* There has been an escape.  Used to distinguish |[| from [ */
+        r->token_escaped = 1;
         /* Include the next character as is. Prompt if it's a newline. */
         ch = r->char_reader(r);
         if(ch == '\n')
-            maybe_prompt(r, "\\ ");
+            r->ic->maybe_prompt(r, "\\ ");
 
         if(ch == EOF) {
             /* Do nothing. */
@@ -351,8 +535,10 @@ sexpr *logoreadobj(logoreader *lr) {
   if(name_eq(token, lr->ic->n_newline)) return lr->ic->eof;
 
   /* Check for sentences or arrays. */
-  if(name_eq(token, lr->ic->n_lbracket)) return logoreadlist(lr, lr->ic->n_rbracket);
-  if(name_eq(token, lr->ic->n_lbrace)) return logoreadarray(lr);
+  if(name_eq(token, lr->ic->n_lbracket) && !lr->token_escaped)
+    return logoreadlist(lr, lr->ic->n_rbracket);
+  if(name_eq(token, lr->ic->n_lbrace) && !lr->token_escaped)
+    return logoreadarray(lr);
 
   /* Check to see if it's a valid number. */
   possible_number = get_cstring(lr->ic, token);
@@ -377,7 +563,7 @@ static sexpr *logoreadarray(logoreader *lr) {
   /* Look at the next token for @<origin> */
   sexpr *token = gettoken(lr);
   if(token->u.name.length >= 2 &&
-     token->u.name.name[0] == '@') {
+     token->u.name.head[token->u.name.start] == '@') {
       origin = atoi(get_cstring(lr->ic, butfirst(lr->ic, token)));
   } else {
       putback_token(lr, token);
@@ -395,44 +581,59 @@ static sexpr *logoreadlist(logoreader *lr, sexpr *ending_token) {
 
   /* Skip newlines. */
   while(token != NULL && name_eq(token, lr->ic->n_newline)) {
-      maybe_prompt(lr, "~ ");
+      lr->ic->maybe_prompt(lr, "~ ");
       token = gettoken(lr);
   }
 
   if(token == NULL) return lr->ic->eof;
 
   /* If we're at the end, return the empty list. */
-  if(name_eq(token, ending_token)) return lr->ic->g_nil;
+  if(name_eq(token, ending_token) && !lr->token_escaped)
+    return lr->ic->g_nil;
 
   /* Otherwise, read an object, read the rest of the list, and
      cons the object onto the beginning of the list.
      The object must be protected from garbage collection that
      can occur while reading the rest of the list. */
   putback_token(lr, token);
-  first = protect(lr->ic->g, logoreadobj(lr)); /* Must force evaluation order */
+  first = logoreadobj(lr); /* Must force evaluation order */
+  protect_ptr(lr->ic->g, (void **) &first);
   sexpr *ret = cons(lr->ic, first, logoreadlist(lr, ending_token));
-  unprotect(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
   return ret;
 }
 
 /* Used by READLIST, the primitive that reads a newline terminated list
    of objects. */
-static sexpr *readlisthelper(logoreader *lr) {
+static sexpr *readlisthelper(logoreader *lr, int parencount) {
   sexpr *first;
   sexpr *token = gettoken(lr);
 
+  /* Skip newlines if we have outstanding parenthesis. */
+  while(token != NULL && name_eq(token, lr->ic->n_newline) &&
+        parencount > 0) {
+      lr->ic->maybe_prompt(lr, "~ ");
+      token = gettoken(lr);
+  }
+  
   if(token == NULL) return lr->ic->g_nil;
 
-  /* Found a newline.  We're done. */
-  if(name_eq(token, lr->ic->n_newline)) return lr->ic->g_nil;
+  /* Found a newline without outstanding parenthesis.  We're done. */
+  if(name_eq(token, lr->ic->n_newline) && parencount <= 0)
+      return lr->ic->g_nil;
+  else if(name_eq(token, lr->ic->n_lparen))
+      parencount++;
+  else if(name_eq(token, lr->ic->n_rparen) && parencount > 0)
+      parencount--;
 
   /* Otherwise, read an object, read a list, and cons the object
      onto the list. Must protect the object from garbage collection
      that may occur during the recursive call to readlisthelper(). */
   putback_token(lr, token);
-  first = protect(lr->ic->g, logoreadobj(lr)); /* Must force evaluation order */
-  sexpr *ret = cons(lr->ic, first, readlisthelper(lr));
-  unprotect(lr->ic->g);
+  first = logoreadobj(lr); /* Must force evaluation order */
+  protect_ptr(lr->ic->g, (void **) &first);
+  sexpr *ret = cons(lr->ic, first, readlisthelper(lr, parencount));
+  unprotect_ptr(lr->ic->g);
   return ret;
 }
 
@@ -443,17 +644,13 @@ sexpr *readlist(logoreader *lr) {
   sexpr *token;
   IC *ic = lr->ic;
 
-  if(reading_stdin(lr))
-      if(tty_cooked(fileno(stdin)) < 0) {
-          eprintf(ic, "Error setting terminal back to cooked mode");
-          throw_error(ic, ic->continuation->line);
-      }
+  ic->linemode(lr);
 
   token = gettoken(lr);
   if(token == NULL) return lr->ic->n_empty;
 
   putback_token(lr, token);
-  return readlisthelper(lr);
+  return readlisthelper(lr, 0);
 }
 
 /* Read in a LINE of a procedure.  Create a line that contains
@@ -470,8 +667,9 @@ sexpr *readline(logoreader *lr, sexpr *procedure, sexpr *prompt) {
      The list must be protected from possible garbage collection
      during the call to word_from_byte_buffer() below.
      Readlist returns the empty word (not list) on EOF. */
-  maybe_prompt(lr, get_cstring(lr->ic, prompt));
-  list = protect(lr->ic->g, readlist(lr));
+  lr->ic->maybe_prompt(lr, get_cstring(lr->ic, prompt));
+  list = readlist(lr);
+  protect_ptr(lr->ic->g, (void **) &list);
   if(name_eq(list, lr->ic->n_empty)) goto exit;
 
   /* Create the LINE.  The word from the byte_bytter is the
@@ -482,7 +680,7 @@ sexpr *readline(logoreader *lr, sexpr *procedure, sexpr *prompt) {
 
   exit:
   /* Cleanup and return the line. */
-  unprotect(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
   lr->logging_raw_line = 0;
   clear_byte_buffer(lr->raw_line);
   return line;
@@ -496,11 +694,7 @@ sexpr *readword(logoreader *lr) {
     byte_buffer *bb = mk_byte_buffer(lr->ic);
     int ch;
 
-    if(reading_stdin(lr))
-        if(tty_cooked(fileno(stdin)) < 0) {
-            eprintf(ic, "Error setting terminal back to cooked mode");
-            throw_error(ic, ic->continuation->line);
-        }
+    ic->linemode(lr);
 
     ch = lr->char_reader(lr);
 
@@ -520,7 +714,7 @@ sexpr *readword(logoreader *lr) {
                it in the word, but print a prompt if reading from a 
                terminal. */
             if(ch == '\n')
-                maybe_prompt(lr, "\\ ");
+                lr->ic->maybe_prompt(lr, "\\ ");
             ch = lr->char_reader(lr);
         } else if(ch == '|') {
             /* Keep characters between |'s */
@@ -530,7 +724,7 @@ sexpr *readword(logoreader *lr) {
             for(;;) {
                 /* Keep newlines between |'s */
                 if(ch == '\n')
-                    maybe_prompt(lr, "| ");
+                    lr->ic->maybe_prompt(lr, "| ");
                 
                 if(ch == '\\') {
                     /* Keep any character after a backslash.
@@ -538,7 +732,7 @@ sexpr *readword(logoreader *lr) {
                        Do not keep the backslash. */
                     ch = lr->char_reader(lr);
                     if(ch == '\n')
-                        maybe_prompt(lr, "\\ ");
+                        lr->ic->maybe_prompt(lr, "\\ ");
 
                     if(ch == EOF) {
                         return ic->g_nil;
@@ -564,7 +758,7 @@ sexpr *readword(logoreader *lr) {
             ch = lr->char_reader(lr);
             if(ch == '\n') {
                 /* If it's followed by a newline, print a prompt. */
-                maybe_prompt(lr, "~ ");
+                lr->ic->maybe_prompt(lr, "~ ");
                 add_to_byte_buffer(ic, bb, ch);
                 ch = lr->char_reader(lr);
             }
@@ -587,11 +781,7 @@ sexpr *readrawline(logoreader *lr) {
     byte_buffer *bb = mk_byte_buffer(lr->ic);
     int ch;
 
-    if(reading_stdin(lr))
-        if(tty_cooked(fileno(stdin)) < 0) {
-            eprintf(ic, "Error setting terminal back to cooked mode");
-            throw_error(ic, ic->continuation->line);
-        }
+    ic->linemode(lr);
 
     ch = lr->char_reader(lr);
 
@@ -617,11 +807,7 @@ sexpr *readchar(logoreader *lr) {
     int ch;
     char cch;
 
-    if(reading_stdin(lr))
-        if(tty_cbreak(fileno(stdin)) < 0) {
-            eprintf(ic, "Error setting terminal to cbreak mode");
-            throw_error(ic, ic->continuation->line);
-        }
+    ic->charmode_blocking(lr);
 
     ch = lr->char_reader(lr);
 
@@ -640,11 +826,7 @@ sexpr *readchars(logoreader *lr, int count) {
     byte_buffer *bb = mk_byte_buffer(ic);
     sexpr *ret;
 
-    if(reading_stdin(lr))
-        if(tty_cbreak(fileno(stdin)) < 0) {
-            eprintf(ic, "Error setting terminal to cbreak mode");
-            throw_error(ic, ic->continuation->line);
-        }
+    ic->charmode_blocking(lr);
 
     for(i = 0; i < count; i++) {
         ch = lr->char_reader(lr);
@@ -670,61 +852,44 @@ sexpr *keyp(logoreader *lr) {
     if(lr->char_la_valid)
         return lr->ic->n_true;
 
-    if(reading_stdin(lr)) {
-        if(tty_nonblocking(fileno(lr->ifp)) < 0) {
-           eprintf(lr->ic, "Error setting terminal to nonblocking mode");
-           throw_error(lr->ic, lr->ic->continuation->line);
-        }
-        if(tty_cbreak(fileno(stdin)) < 0) {
-            eprintf(lr->ic, "Error setting terminal to cbreak mode");
-            throw_error(lr->ic, lr->ic->continuation->line);
-        }
-    }
+    lr->ic->charmode_nonblocking(lr);
 
     fflush(stdout);
 
-    ch = getc(lr->ifp);
+    ch = lr->char_reader(lr);
     if(ch == EOF) {
         ret = lr->ic->n_false;
     } else {
-        if(ungetc(ch, lr->ifp) == EOF) {
-            eprintf(lr->ic, "Error calling ungetc");
-            throw_error(lr->ic, lr->ic->continuation->line);
-        }
+        put_back_char(lr, ch);
         ret = lr->ic->n_true;
     }
 
-    if(reading_stdin(lr)) {
-        /* Switch back to blocking mode.
-           Stay in cbreak mode.  If we switch back to cooked
-           mode the keystroke will be flushed. */
-        if(tty_blocking(fileno(lr->ifp)) < 0) {
-           eprintf(lr->ic, "Error setting terminal to blocking mode");
-           throw_error(lr->ic, lr->ic->continuation->line);
-        }
-    }
+    /* Switch back to blocking mode.
+       Stay in cbreak mode.  If we switch back to cooked
+       mode the keystroke will be flushed. */
+    lr->ic->charmode_blocking(lr);
 
     return ret;
 }
 
-/* The only garbage collected pointers in a logoreader are the two
-   byte_buffer's.
-   When the logoreader is being marked during garbage collection,
-   mark the byte_buffer's.
+/* The only garbage collected pointers in a logoreader are the
+   byte_buffer's and the source string.
  */
 static void mark_logoreader(GC *g, void *o, object_marker om, weak_pointer_registerer wpr) {
     logoreader *r = (logoreader *) o;
-    om(g, r->bb);
-    om(g, r->raw_line);
+    om(g, (void **) &r->bb);
+    om(g, (void **) &r->raw_line);
+    om(g, (void **) &r->source_string);
 }
 
 /* Create a logoreader. */
 logoreader *mk_logoreader(IC *ic) {
-  logoreader *r = ic_xmalloc(ic, sizeof(logoreader), mark_logoreader);
+  logoreader *r = (logoreader *)ic_xmalloc(ic, sizeof(logoreader), mark_logoreader);
   r->ic = ic;
   r->bb = mk_byte_buffer(ic);       /* For building tokens. */
   r->raw_line = mk_byte_buffer(ic); /* For logging the raw line during a
                                        READLINE. */
+  r->source_string = NULL;
   r->logging_raw_line = 0;
   r->token_la_valid = 0;
   r->last_break = BROKE_ON_SPACE;

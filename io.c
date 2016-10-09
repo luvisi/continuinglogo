@@ -31,6 +31,8 @@
 #include "byte_buffer.h"
 #include "reader.h"
 #include "logoreader.h"
+#include "wxui.h"
+
 
 /* io.c
 
@@ -47,7 +49,7 @@
    Performs a printf into a byte_buffer.  Used by eprintf (error
    printf) for stashing error messages in ic->error_byte_buffer and
    used when printing into a word */
-void vbbprintf(IC *ic, byte_buffer *bb, char *format, va_list ap) {
+void vbbprintf(IC *ic, byte_buffer *bb, const char *format, va_list ap) {
     va_list ap_copy;
     int i, len;
     char *buf;
@@ -65,8 +67,14 @@ void vbbprintf(IC *ic, byte_buffer *bb, char *format, va_list ap) {
        vabbprintf consistent with that of vsnprintf, we do not call it
        here either.  It is the caller's responsibility to call va_end
        on the passed va_list.
+
+       Add +1 for the null byte.  According to the vsnprintf(3) man
+       page:
+           Upon successful return, these functions return the number
+           of characters printed (excluding the null byte used to end
+           output to strings).
      */
-    buf = ic_xmalloc(ic, len+1, mark_cstring);
+    buf = (char *)ic_xmalloc(ic, len+1, mark_cstring);
     vsnprintf(buf, len+1, format, ap);
 
     /* Add the contents of the buffer to the byte_buffer. */
@@ -75,12 +83,61 @@ void vbbprintf(IC *ic, byte_buffer *bb, char *format, va_list ap) {
     }
 }
 
+/* A pointer to wx_vprintf() will be stored in ic->output_printer
+   when we are running in GUI mode.  This is how things ultimately
+   get printed to the user. */
+void wx_vprintf(IC *ic, const char *format, va_list ap) {
+    va_list ap_copy;
+    int len;
+    char *buf;
+
+    /* va_lists cannot be reused, so they must be copied if they
+       are going to be used again.
+       We use one call to vsnprintf with a NULL target and a maximum
+       length of 0 to figure out how large of a buffer we need. */
+    va_copy(ap_copy, ap);
+    len = vsnprintf(NULL, 0, format, ap_copy);
+    va_end(ap_copy);
+
+    /* Allocate the buffer and do the vsnprintf for real.
+       vsnprintf does not call va_end, so to keep the interface of
+       wx_vprintf consistent with that of vsnprintf, we do not call it
+       here either.  It is the caller's responsibility to call va_end
+       on the passed va_list.
+
+       Add 1 because the return count does not include the null bye
+       at the end of the string.
+     */
+    buf = (char *)ic_xmalloc(ic, len+1, mark_cstring);
+    vsnprintf(buf, len+1, format, ap);
+
+    wxString s(buf);
+    wxCommandEvent *printevent = new wxCommandEvent(PRINT_TEXT);
+    printevent->SetString(s);
+    wxTheApp->QueueEvent(printevent);
+
+    /* Without this, the GUI thread can get so overrun with successive
+       PRINT_TEXT events that it becomes unresponsive to UI events. */
+    wxThread::This()->Sleep(1);
+}
+
+/* A pointer to terminal_vprintf() will be stored in ic->output_printer
+   when we are running in terminal mode.  This is how things ultimately
+   get printed to the user. */
+void terminal_vprintf(IC *ic, const char *format, va_list ap) {
+    /* Flush stdout before printing to stderr so that things
+       are more likely to come out in the right order. */
+    fflush(stdout);
+    vfprintf(stderr, format, ap);
+    fflush(stderr);
+}
+
 /* Vector terminal printf.  
    Used to print things directly to the terminal, even if output
    is redirected.  Anything printed to the terminal is copied
    to the dribble file, if there is one.
  */
-void vtprintf(IC *ic, char *format, va_list ap) {
+void vtprintf(IC *ic, const char *format, va_list ap) {
     va_list ap_copy;
 
     if(!is_nil(ic, ic->dribble_name)) {
@@ -90,11 +147,7 @@ void vtprintf(IC *ic, char *format, va_list ap) {
         va_end(ap_copy);
     }
 
-    /* Flush stdout before printing to stderr so that things
-       are more likely to come out in the right order. */
-    fflush(stdout);
-    vfprintf(stderr, format, ap);
-    fflush(stderr);
+    ic->output_printer(ic, format, ap);
 }
 
 /* Vector destination printf.
@@ -102,20 +155,20 @@ void vtprintf(IC *ic, char *format, va_list ap) {
    If the destination is a FILEP, then we print to the associated file.
    If it is a BYTE_BUFFERP, then we print to the byte_buffer.
  */
-void vdestprintf(IC *ic, sexpr *dest, char *format, va_list ap) {
+void vdestprintf(IC *ic, sexpr *dest, const char *format, va_list ap) {
     if(dest->t == FILEP)
         vfprintf(dest->u.filep.file, format, ap);
     else if(dest->t == BYTE_BUFFERP)
-        vbbprintf(ic, dest->u.byte_bufferp.byte_buffer, format, ap);
+        vbbprintf(ic, dest->u.byte_bufferp.bb, format, ap);
     else {
         fprintf(stderr, "Invalid argument to vdestprintf");
-        exit(EXIT_FAILURE);
+        longjmp(ic->quit, 1);
     }
 }
    
 /* Terminal printf.
    This is a wrapper around vtprintf that has printf style arguments. */
-void tprintf(IC *ic, char *format, ...) {
+void tprintf(IC *ic, const char *format, ...) {
     va_list ap;
     va_start(ap, format);
     vtprintf(ic, format, ap);
@@ -124,10 +177,10 @@ void tprintf(IC *ic, char *format, ...) {
 
 /* Logo printf.
    This is the print function for normal output.
-   It prints to the terminal if output is not redirected, and otherwise
+   It prints to the user if output is not redirected, and otherwise
    prints to the current output destination
  */
-void lprintf(IC *ic, char *format, ...) {
+void lprintf(IC *ic, const char *format, ...) {
     va_list ap;
     va_start(ap, format);
 
@@ -151,14 +204,14 @@ void lprintf(IC *ic, char *format, ...) {
    If we are inside of a CATCH "ERROR [...] and the throw_error() is
    called, then the error will be stored for retrieval by ERROR.
  */
-void eprintf(IC *ic, char *format, ...) {
+void eprintf(IC *ic, const char *format, ...) {
     va_list ap;
     va_start(ap, format);
     vdestprintf(ic, ic->error_byte_buffer, format, ap);
     va_end(ap);
 }
 
-typedef void (*printerf)(IC *ic, char *format, ...)
+typedef void (*printerf)(IC *ic, const char *format, ...)
 #ifdef __GNUC__
 __attribute__ ((format (printf, 2, 3)))
 #endif
@@ -216,7 +269,11 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
 
         case MACRO:
             /* MACRO's cannot be read back in. */
-            printer(ic, "#<MACRO>");
+            printer(ic, "#<MACRO ");
+            io_print_sexpr(ic, printer, e->u.macro.macro_type);
+            printer(ic, " ");
+            io_print_sexpr(ic, printer, e->u.macro.expander);
+            printer(ic, ">");
             break;
 
         case CONTINUATION:
@@ -232,12 +289,16 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
         case NAME:
             {
                 /* When printing a name, we don't honor fullprintp if
-                   the name would be read back in correctly without it.
-                   Unary operators, <=, >=, and <> don't need to be
-                   escaped. */
-                int i;
+                   the name would be read back in correctly without it. */
+                unsigned int i;
                 int really_fullprint = fullprint;
-                if(e->u.name.length == 1 ||
+                if(name_eq(e, ic->n_plus) ||
+                   name_eq(e, ic->n_minus) ||
+                   name_eq(e, ic->n_star) ||
+                   name_eq(e, ic->n_slash) ||
+                   name_eq(e, ic->n_equal) ||
+                   name_eq(e, ic->n_lt) ||
+                   name_eq(e, ic->n_gt) ||
                    name_eq(e, ic->n_le) ||
                    name_eq(e, ic->n_ge) ||
                    name_eq(e, ic->n_ne))
@@ -246,10 +307,10 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
                 /* Print out the name, adding backslashes before any
                    characters that would otherwise terminate reading. */
                 for(i = 0; i < e->u.name.length; i++) {
-                  char ch = e->u.name.name[i];
+                  char ch = e->u.name.head[e->u.name.start+i];
                   if(really_fullprint &&
                      !isalnum(ch) &&
-                     !strchr("\":._", ch))
+                     !strchr("\":._?", ch))
                       printer(ic, "\\");
                   printer(ic, "%c", ch);
               }
@@ -281,7 +342,7 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
             /* Print an array literal. */
             printer(ic, "{");
             {
-              int i;
+              unsigned int i;
               for(i = 0; i < e->u.array.length; i++) {
                   if(i > 0) printer(ic, " ");
                   io_print_sexpr(ic, printer, e->u.array.members[i]);
@@ -313,6 +374,9 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
             /* PROC's cannot be read back in. */
             printer(ic, "#<PROC ");
             io_print_sexpr(ic, printer, e->u.proc.proc);
+            printer(ic, " minargs=%d", e->u.proc.minargs);
+            printer(ic, " defargs=%d", e->u.proc.defargs);
+            printer(ic, " maxargs=%d", e->u.proc.maxargs);
             printer(ic, ">");
             break;
 
@@ -369,7 +433,7 @@ static sexpr *findfile(IC *ic, sexpr *name) {
    If successfully opened, the path and file are added to the open_files
    list.
  */
-static void lopen(IC *ic, sexpr *path, char *mode) {
+static void lopen(IC *ic, sexpr *path, const char *mode) {
     sexpr *file = findfile(ic, path); /* Check for file already open. */
     char *path_cs;
     FILE *fp;
@@ -474,7 +538,7 @@ void lclose(IC *ic, sexpr *path) {
                in the car. */
             /* car(*l) is the pair containing a destination description
                (name or CONS in the car, in this case a CONS, and
-               a FILEP or BYTE_BUFFERP in teh cdr, in this case a
+               a FILEP or BYTE_BUFFERP in the cdr, in this case a
                BYTE_BUFFERP).
                car(car(*l)) is the destination description, in this
                case a cons.
@@ -484,7 +548,7 @@ void lclose(IC *ic, sexpr *path) {
             sexpr *name = car(car(car(*l)));
             STORE(ic->g, name->u.name.symbol,
                   name->u.name.symbol->value,
-                  word_from_byte_buffer(ic, cdr(car(*l))->u.byte_bufferp.byte_buffer));
+                  word_from_byte_buffer(ic, cdr(car(*l))->u.byte_bufferp.bb));
             /* Remove the pair from the open files list. */
             STORE(ic->g, linking_object, *l, cdr(*l));
             return;
@@ -548,10 +612,10 @@ void setread(IC *ic, sexpr *name) {
     sexpr *filep;
 
     if(is_nil(ic, name)) {
-        STORE(ic->g, NULL, ic->input, mk_filep(ic, stdin));
+        STORE(ic->g, NULL, ic->input, mk_filep(ic, NULL));
         STORE(ic->g, NULL, ic->input_name, ic->g_nil);
-        read_from_file(ic, stdin);
-        logoread_from_file(ic->lr, stdin);
+        read_from_file(ic, NULL);
+        logoread_from_file(ic->lr, NULL);
 
         return;
     }
@@ -575,6 +639,9 @@ void setwrite(IC *ic, sexpr *name) {
     sexpr *filep;
 
     if(is_nil(ic, name)) {
+        /* Switch to writing to the user.
+           ic->output is only used for WRITEPOS to stdout since
+           lprintf() calls vtprintf() if ic->output_name is nil. */
         STORE(ic->g, NULL, ic->output, mk_filep(ic, stdout));
         STORE(ic->g, NULL, ic->output_name, ic->g_nil);
         return;
@@ -608,11 +675,14 @@ sexpr *allopen(IC *ic) {
 
 /* Close all open files. */
 void closeall(IC *ic) {
-    sexpr *l = allopen(ic);
+    sexpr *s = allopen(ic), *l = s;
+
+    protect_ptr(ic->g, (void **) &s);
     while(!is_nil(ic, l)) {
         lclose(ic, car(l));
         l = cdr(l);
     }
+    unprotect_ptr(ic->g);
 }
 
 /* Delete a file. */
@@ -695,7 +765,7 @@ void mark_string_array(GC *g,
   char **a  = (char **) c;
   if(a != NULL) {
       while(*a != NULL) {
-          om(g, *a);
+          om(g, (void **) a);
           a++;
       }
   }
@@ -721,8 +791,8 @@ char **mk_string_array(IC *ic, sexpr *names) {
     /* Need to allocate an extra pointer for the NULL marker at the end. */
     /* Needs to be protected during the allocations that occur in get_cstring
        and that can occur in to_name. */
-    ret = ic_xmalloc(ic, sizeof(char *)*(count+1), mark_string_array);
-    protect(ic->g, ret);
+    ret = (char **)ic_xmalloc(ic, sizeof(char *)*(count+1), mark_string_array);
+    protect_ptr(ic->g, (void **) &ret);
 
     /* We need to NULL out ret so that if the allocations below cause
        attempts to traverse it during garbage collection nothing bad
@@ -741,7 +811,7 @@ char **mk_string_array(IC *ic, sexpr *names) {
         np = cdr(np);
     }
 
-    unprotect(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -766,10 +836,18 @@ void openshell(IC *ic, sexpr *name, sexpr *args) {
 
     if(args->t == NAME) {
         /* If args is just a single name, then run it with the shell. */
+        sexpr *sh, *mc;
+        sh = intern(ic, "sh");
+        protect_ptr(ic->g, (void **) &sh);
+        mc = intern(ic, "-c");
+        protect_ptr(ic->g, (void **) &mc);
+
         argv = mk_string_array(ic,
-                   cons(ic, intern(ic, "sh"),
-                            cons(ic, intern(ic, "-c"),
+                   cons(ic, sh,
+                            cons(ic, mc,
                                      cons(ic, args, ic->g_nil))));
+        unprotect_ptr(ic->g);
+        unprotect_ptr(ic->g);
     } else if(args->t == CONS) {
         /* If args is a list, then use it as the arguments to execvp. */
         argv = mk_string_array(ic, args);
@@ -840,10 +918,18 @@ sexpr *systemf(IC *ic, sexpr *args) {
     
     if(args->t == NAME) {
         /* Use the shell if args is a name. */
+        sexpr *sh, *mc;
+        sh = intern(ic, "sh");
+        protect_ptr(ic->g, (void **) &sh);
+        mc = intern(ic, "-c");
+        protect_ptr(ic->g, (void **) &mc);
+
         argv = mk_string_array(ic,
-                   cons(ic, intern(ic, "sh"),
-                            cons(ic, intern(ic, "-c"),
+                   cons(ic, sh,
+                            cons(ic, mc,
                                      cons(ic, args, ic->g_nil))));
+        unprotect_ptr(ic->g);
+        unprotect_ptr(ic->g);
     } else if(args->t == CONS) {
         /* Use args as the arguments to execvp directly if it is a list. */
         argv = mk_string_array(ic, args);

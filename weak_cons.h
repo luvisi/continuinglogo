@@ -21,7 +21,7 @@
 #ifndef WEAK_CONS_H
 #define WEAK_CONS_H
 
-#include "gc.h"
+#include "pcgc.h"
 #include "list_memory.h"
 #include "interpreter.h"
 
@@ -34,6 +34,6 @@
    to collect names that nave no value, procedure, or property list and
    are not referenced from anywhere other than the name list.
  */
-struct sexpr *mk_weak_cons(IC *ic, struct sexpr * car, struct sexpr * cdr);
+struct sexpr *mk_weak_cons(IC *ic, struct sexpr *car, struct sexpr *cdr);
 
 #endif

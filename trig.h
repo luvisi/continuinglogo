@@ -18,16 +18,12 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef GLOBAL_ENVIRONMENT_H
-#define GLOBAL_ENVIRONMENT_H
+#ifndef TRIG_H
+#define TRIG_H
 
-#include "interpreter.h"
-#include "pcgc.h"
-#include "list_memory.h"
-#include "trig.h"
+double degreesin(double degrees);
+double degreecos(double degrees);
+double degreeatan(double degrees);
 
-void initialize_global_environment(IC *ic);
-sexpr *first(IC *ic, sexpr *e);
-sexpr *butfirst(IC *ic, sexpr *e);
 
 #endif

@@ -25,15 +25,20 @@
 #ifndef LOGOREADER_H
 #define LOGOREADER_H
 #include <stdio.h>
-#include "gc.h"
+#include "pcgc.h"
 #include "interpreter.h"
 #include "byte_buffer.h"
+
+enum breaking_state { BROKE_ON_SPACE, BROKE_ON_NONSPACE };
 
 struct logoreader {
     IC *ic;
     int token_la_valid;  /* Do we have a token lookahead? */
     byte_buffer *bb;     /* byte_buffer containing the token being built.
                             Contains the lookahead token when there is one. */
+    int token_escaped;   /* Were there any \ or | escapes while reading the
+                            token?  If so, then we don't want to interpret
+                            brackets or braces specially. */
     int char_la_valid;   /* Is there a lookahead character? */
     int char_la;         /* Lookahead character */
 
@@ -47,7 +52,7 @@ struct logoreader {
     char *source_string;
     int source_position;
 
-    /* Used to reading the raw line, used to create LINE
+    /* Used for reading the raw line, which is used to create LINE
        objects and for printing out the source code with RAWTEXT. */
     byte_buffer *raw_line;
     int logging_raw_line;
@@ -55,7 +60,10 @@ struct logoreader {
     /* Did the last token end by finding a whitespace character
        or a non-whitespace character?  Used for determining whether
        a minus is binary or unary. */
-    enum { BROKE_ON_SPACE, BROKE_ON_NONSPACE } last_break;
+    enum breaking_state last_break;
+
+    /* Are we blocking on wxWidgets reads from the user? */
+    int blocking;
 };
 
 typedef struct logoreader logoreader;
@@ -63,6 +71,29 @@ typedef struct logoreader logoreader;
 
 /* Create a reader. */
 logoreader *mk_logoreader(IC *ic);
+
+/* Linemode, charmode_blocking, and charmode_nonblocking when using a
+   terminal. */
+void linemode_terminal(logoreader *r);
+void charmode_blocking_terminal(logoreader *r);
+void charmode_nonblocking_terminal(logoreader *r);
+
+/* Begin reading from the user in terminal mode. */
+void logoread_from_user_terminal(logoreader *r);
+
+/* Linemode, charmode_blocking, and charmode_nonblocking when using
+   wxWidgets. */
+void linemode_wx(logoreader *r);
+void charmode_blocking_wx(logoreader *r);
+void charmode_nonblocking_wx(logoreader *r);
+
+/* Begin reading from the user in wxWidgets. */
+void logoread_from_user_wx(logoreader *r);
+
+/* Print a prompt if reading from the user. */
+void maybe_prompt_terminal(logoreader *lr, const char *prompt);
+void maybe_prompt_wx(logoreader *lr, const char *prompt);
+
 
 /* Set the source for this reader to a file or a string. */
 void logoread_from_file(logoreader *lr, FILE *fp);

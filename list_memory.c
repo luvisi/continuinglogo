@@ -20,7 +20,7 @@
 
 #include "list_memory.h"
 #include "weak_cons.h"
-#include "gc.h"
+#include "pcgc.h"
 #include "io.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,10 +30,10 @@
    memory.
  */
 void *ic_xmalloc(IC *ic, size_t size, pointer_iterator marker) {
-    void *ret = allocate(ic->g, size, marker);
+    void *ret = gc_allocate(ic->g, size, marker);
     if(ret == NULL) {
         fprintf(stderr, "Out of memory!\n");
-        exit(EXIT_FAILURE);
+        longjmp(ic->quit, 1);
     }
     return ret;
 }
@@ -46,21 +46,22 @@ void mark_cstring(GC *g, void *c, object_marker om, weak_pointer_registerer wpr)
 /* Creates garbage collected copy of namestr if namehead is NULL and
    creates an unbound and uninterned name using mk_symbol and mk_name.
  */
-sexpr *new_name(IC *ic, char *namehead, char *namestr, int len) {
-    char *new_head, *new_name;
+sexpr *new_name(IC *ic, const char *namehead, const char *namestr, unsigned int len) {
+    const char *new_head, *new_name;
     struct symbol *symbol;
     sexpr *name;
 
     if(namehead == NULL) {
-        new_head = new_name = ic_xmalloc(ic, len, mark_cstring);
-        strncpy(new_name, namestr, len);
+        char *tmp = (char *)ic_xmalloc(ic, len, mark_cstring);
+        strncpy(tmp, namestr, len);
+        new_head = new_name = tmp;
     } else {
         new_head = namehead;
         new_name = namestr;
     }
 
 
-    protect(ic->g, new_head);
+    protect_ptr(ic->g, (void **) &new_head);
     symbol = mk_symbol(ic,
                        ic->g_unbound,  /* Unbound value */
                        ic->g_unbound,  /* Unbound function */
@@ -69,10 +70,10 @@ sexpr *new_name(IC *ic, char *namehead, char *namestr, int len) {
                        ic->g_nil,      /* Empty canonical name */
                        ic->g_nil,      /* Empty names list */
                        0);             /* No flags set */
-    name = mk_name(ic, symbol, new_head, new_name, len);
+    name = mk_name(ic, symbol, new_head, new_name-new_head, len);
     STORE(ic->g, symbol, symbol->canonical_name, name);
     STORE(ic->g, symbol, symbol->names, cons(ic, name, ic->g_nil));
-    unprotect(ic->g);
+    unprotect_ptr(ic->g);
 
     return name;
 }
@@ -81,7 +82,10 @@ int min(int a, int b) { return a < b ? a : b; }
 
 /* Finds or creates the appropriate name given a canonical name.
    If a name must be created, adds it to the namelist for the symbol. */
-sexpr *find_or_create_name(IC *ic, sexpr *cname, char *namestr, int len) {
+sexpr *find_or_create_name(IC *ic,
+                           sexpr *cname,
+                           const char *namestr,
+                           unsigned int len) {
     char *new_name;
     sexpr *names;
     sexpr *name;
@@ -91,17 +95,17 @@ sexpr *find_or_create_name(IC *ic, sexpr *cname, char *namestr, int len) {
     while(!is_nil(ic, names)) {
         /* Comparison IS case sensitive here. */
         if(car(names)->u.name.length == len &&
-           !strncmp(car(names)->u.name.name, namestr, len)) {
+           !strncmp(car(names)->u.name.head+car(names)->u.name.start, namestr, len)) {
             return car(names);
         }
         names = cdr(names);
     }
 
-    new_name = ic_xmalloc(ic, len, mark_cstring);
+    new_name = (char *)ic_xmalloc(ic, len, mark_cstring);
 
     strncpy(new_name, namestr, len);
     symbol = cname->u.name.symbol;
-    name = mk_name(ic, symbol, new_name, new_name, len);
+    name = mk_name(ic, symbol, new_name, 0, len);
     STORE(ic->g, symbol, symbol->names,
           cons(ic, name, symbol->names));
 
@@ -109,12 +113,12 @@ sexpr *find_or_create_name(IC *ic, sexpr *cname, char *namestr, int len) {
 }
 
 /* Dan Bernstein hash function */
-static unsigned long djb2_hash(char *str, int count) {
+static unsigned long djb2_hash(const char *str, int count) {
     unsigned long hash = 5381;
     int i;
 
     for(i = 0; i < count; i++)
-        hash = ((hash << 5) + hash) + (unsigned char)str[i]; /* hash * 33 + c */
+        hash = ((hash << 5) + hash) + (unsigned char)tolower(str[i]); /* hash * 33 + c */
 
     return hash;
 }
@@ -127,20 +131,20 @@ static unsigned long djb2_hash(char *str, int count) {
    list.
  */
   
-sexpr *intern_len(IC *ic, char *namehead, char *namestr, int len) {
+sexpr *intern_len(IC *ic, const char *namehead, const char *namestr, unsigned int len) {
     unsigned long hash = djb2_hash(namestr, len) % NAME_TABLE_HASH_BUCKETS;
     sexpr *names = ic->name_table[hash];
     sexpr *name;
     sexpr *ret;
 
-    protect(ic->g, namehead);
+    protect_ptr(ic->g, (void **) &namehead);
 
     while(!is_nil(ic, names)) {
         if(car(names)->t == NAME &&
            car(names)->u.name.length == len &&
-           !strncasecmp(namestr, car(names)->u.name.name, len)) {
+           !strncasecmp(namestr, car(names)->u.name.head+car(names)->u.name.start, len)) {
             ret = find_or_create_name(ic, car(names), namestr, len);
-            unprotect(ic->g);
+            unprotect_ptr(ic->g);
             return ret;
         }
         names = cdr(names);
@@ -158,13 +162,13 @@ sexpr *intern_len(IC *ic, char *namehead, char *namestr, int len) {
     STORE(ic->g, NULL, ic->name_table[hash], pair);
 
     ret = name;
-    unprotect(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Wrapper function for calling intern_len when we have a null terminated
    C string. */
-sexpr *intern(IC *ic, char *namestr) {
+sexpr *intern(IC *ic, const char *namestr) {
     int len = strlen(namestr);
 
     return intern_len(ic, NULL, namestr, len);
@@ -181,7 +185,7 @@ sexpr *intern(IC *ic, char *namestr) {
 
 /* mk_bindings builds up its return value destructively.
    ret is the value that will be returned, and tail is always pointing
-   to the last pointer in the last.  It points at ret to begin with,
+   to the last pointer in the list.  It points at ret to begin with,
    but points inside of the last cons cell once some bindings have been
    created.
 
@@ -193,7 +197,7 @@ sexpr *intern(IC *ic, char *namestr) {
        [<word>]        rest parameter - All remaining arguments will be turned
                        into a list and assigned to <word>
 
-   *params is advanced through the formal parameters as bindings is made.
+   *paramsp is advanced through the formal parameters as bindings are made.
    This is to inform eval() what optional or rest arguments may still need
    to be handled.
 
@@ -207,10 +211,7 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
                                 up so far. */
     sexpr *linking_object = NULL;
 
-    protect_ptr(ic->g, (void **)&ret); /* We need to protect the pointer
-                                          and not the value because the
-                                          pointer will change during the
-                                          function. */
+    protect_ptr(ic->g, (void **)&ret);
 
     while((*paramsp)->t == CONS &&
           (is_nil(ic, args) || args->t == CONS)) {
@@ -232,15 +233,15 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
                update tail to point to the cdr of the new last cons
                cell in the list. */
             sexpr *binding = unsafe_cons(ic, name, args);
-            protect(ic->g, binding);
+            protect_ptr(ic->g, (void **) &binding);
             STORE(ic->g,
                   linking_object,
                   *tail,
                   unsafe_cons(ic, binding, ic->g_nil));
-            unprotect(ic->g);
+            unprotect_ptr(ic->g);
             linking_object = *tail;
             tail = &(cdr(*tail));
-            *paramsp = cdr(*paramsp);
+            STORE(ic->g, NULL, *paramsp, cdr(*paramsp));
             /* Set args to nil to terminate argument processing.
                We've bound everything to a rest argument, so there's
                nothing else to do. */
@@ -251,15 +252,15 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
                tail to point to the cdr of the new last cons cell in the
                list. */
             sexpr *binding = unsafe_cons(ic, name,  car(args));
-            protect(ic->g, binding);
+            protect_ptr(ic->g, (void **) &binding);
             STORE(ic->g,
                   linking_object,
                   *tail,
                   unsafe_cons(ic, binding, ic->g_nil));
-            unprotect(ic->g);
+            unprotect_ptr(ic->g);
             linking_object = *tail;
             tail = &(cdr(*tail));
-            *paramsp = cdr(*paramsp);
+            STORE(ic->g, NULL, *paramsp, cdr(*paramsp));
             args = cdr(args);
         } else {
             break;
@@ -278,13 +279,13 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
 /* Standard mark_* and mk_*.  See gc.h for details. */
 void mark_frame(GC *g, void *c, object_marker om, weak_pointer_registerer wpr) {
     frame *f = (frame *) c;
-    om(g, f->parent);
-    om(g, f->to_active);
-    om(g, f->bindings);
-    om(g, f->procedure);
-    om(g, f->output_error_info);
-    om(g, f->continuation);
-    om(g, f->parent_continuation);
+    om(g, (void **) &f->parent);
+    om(g, (void **) &f->to_active);
+    om(g, (void **) &f->bindings);
+    om(g, (void **) &f->procedure);
+    om(g, (void **) &f->output_error_info);
+    om(g, (void **) &f->continuation);
+    om(g, (void **) &f->parent_continuation);
 }
 
 frame *mk_frame(IC *ic, frame *parent,
@@ -295,19 +296,19 @@ frame *mk_frame(IC *ic, frame *parent,
                         int allowed_results,
                         struct continuation *parent_continuation,
                         int parent_allowed_results) {
-    protect(ic->g, parent);
-    protect(ic->g, bindings);
-    protect(ic->g, procedure);
-    protect(ic->g, output_error_info);
-    protect(ic->g, continuation);
-    protect(ic->g, parent_continuation);
-    frame *f = ic_xmalloc(ic, sizeof(frame), mark_frame);
-    unprotect(ic->g);
-    unprotect(ic->g);
-    unprotect(ic->g);
-    unprotect(ic->g);
-    unprotect(ic->g);
-    unprotect(ic->g);
+    protect_ptr(ic->g, (void **) &parent);
+    protect_ptr(ic->g, (void **) &bindings);
+    protect_ptr(ic->g, (void **) &procedure);
+    protect_ptr(ic->g, (void **) &output_error_info);
+    protect_ptr(ic->g, (void **) &continuation);
+    protect_ptr(ic->g, (void **) &parent_continuation);
+    frame *f = (frame *)ic_xmalloc(ic, sizeof(frame), mark_frame);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     f->parent = parent;
     f->to_active = parent;
     f->bindings = bindings;
@@ -398,25 +399,23 @@ frame *extend(IC *ic, frame *f, sexpr **formalsp, sexpr *values,
               int allowed_results,
               struct continuation *parent_continuation,
               int parent_allowed_results) {
+    sexpr *filtered_bindings = remove_bindings(ic, *formalsp, f->bindings);
+    /* This protect_ptr() is necessary because mk_bindings() does not
+        protect its arguments. */
+    protect_ptr(ic->g, (void **)&filtered_bindings);
     frame *ret = mk_frame(ic,
                           f->parent,
                           mk_bindings(ic,
                                       formalsp,
                                       values,
-                                      /* This protect() is necessary because
-                                         mk_bindings() does not protect its
-                                         arguments. */
-                                      protect(ic->g,
-                                              remove_bindings(ic,
-                                                              *formalsp,
-                                                              f->bindings))),
+                                      filtered_bindings),
                           procedure,
                           output_error_info,
                           continuation,
                           allowed_results,
                           parent_continuation,
                           parent_allowed_results);
-    unprotect(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -461,7 +460,7 @@ void add_local(IC *ic, frame *f, sexpr *name) {
    root.
  */
 void reroot(IC *ic, frame *f) {
-    frame *new = NULL;
+    frame *newf = NULL;
     frame *old = f;
     frame *tmp;
 
@@ -469,27 +468,34 @@ void reroot(IC *ic, frame *f) {
        Frames are taken off of old, adjusted to point to new, and
        stuck at the head of new. */
     while(old != NULL) {
-        tmp = old->to_active;
-        old->to_active = new;
-        new = old;
-        old = tmp;
+        /* Pop off of old */
+        tmp = old;
+        old = old->to_active;
+
+        /* Push onto newf */
+        tmp->to_active = newf;
+        newf = tmp;
     }
 
-    /* Second walk, unwind all frames up to common ancestor. */
-    while(new->to_active != NULL && new->to_active == new->parent) {
-        do_swap(ic, new);
-        new = new->to_active;
+    /* Second walk, unwind all frames up to common ancestor.
+       We are at the destination if to_active == NULL.
+       We are at the common ancestor if to_active != parent. */
+    while(newf->to_active != NULL && newf->to_active == newf->parent) {
+        do_swap(ic, newf);
+        newf = newf->to_active;
     }
 
-    /* Move down to branch to wind. */
-    /* The common ancestor does not get a do_swap() because its
-       bindings are common to both the old and the new frames. */
-    new = new->to_active;
+    /* Move down to branch to wind.
+       The common ancestor does not get a do_swap() because its
+       bindings are common to both the old and the new frames.
+       If to_active is NULL, then we're already at our new frame
+       and we're done, so the loop below will do nothing. */
+    newf = newf->to_active;
 
     /* Wind all frames down to self/new root. */
-    while(new != NULL) {
-        do_swap(ic, new);
-        new = new->to_active;
+    while(newf != NULL) {
+        do_swap(ic, newf);
+        newf = newf->to_active;
     }
 }
 
@@ -513,21 +519,34 @@ void cleanup_name_table(GC *g) {
   int i;
 
   for(i = 0; i < NAME_TABLE_HASH_BUCKETS; i++) {
+      /* For each hash bucket, we special case the deletion of
+         items from the beginning of the list.
+         These stores are into the root set, while stores
+         later on below are into cons cells. */
       while(!is_nil(ic, ic->name_table[i]) && 
             car(ic->name_table[i]) == ic->g_nil) {
           STORE(g, NULL, ic->name_table[i], cdr(ic->name_table[i]));
       }
 
       current = ic->name_table[i];
+      /* At this point, current is either nil or it is a pointer to
+         a cons cell with a non-nil car. */
       while(!is_nil(ic, current)) {
+        /* current is a pointer to a cons cell with a non-nil car.
+           Unlink any successors with a nil car and then move on. */
         sexpr *next = cdr(current);
         if(!is_nil(ic, next) && car(next) == ic->g_nil) {
             while(!is_nil(ic, next) && car(next) == ic->g_nil)
                 next = cdr(next);
+            /* next is nil or has a non-nil car. */
             STORE(g, current, cdr(current), next);
+            /* cdr(current) is nil or has a non-nil car. */
         }
         current = cdr(current);
+        /* current is nil or has a non-nil car. */
       }
+      /* current is nil and the name table entry now contains no
+         cons cells with a nil car */
   }
 }
 
@@ -539,16 +558,16 @@ void cleanup_name_table(GC *g) {
  */
 char *get_cstring(IC *ic, sexpr *e) {
     char *ret;
-    protect(ic->g, e);
+    protect_ptr(ic->g, (void **) &e);
     if(e->t == NAME) {
-        char *cp = ic_xmalloc(ic, e->u.name.length+1, mark_cstring);
-        strncpy(cp, e->u.name.name, e->u.name.length);
+        char *cp = (char *)ic_xmalloc(ic, e->u.name.length+1, mark_cstring);
+        strncpy(cp, e->u.name.head+e->u.name.start, e->u.name.length);
         cp[e->u.name.length] = '\0';
         ret = cp;
     } else {
         ret = NULL;
     }
-    unprotect(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -562,7 +581,7 @@ sexpr *to_name(IC *ic, sexpr *e) {
             return e;
         case NUMBER:
             len = snprintf(NULL, 0, "%g", e->u.number.value);
-            buf = ic_xmalloc(ic, len+1, mark_cstring);
+            buf = (char *)ic_xmalloc(ic, len+1, mark_cstring);
             len = snprintf(buf, len+1, "%g", e->u.number.value);
             return intern_len(ic, buf, buf, len);
         default:
@@ -600,25 +619,34 @@ sexpr *to_number(IC *ic, sexpr *e) {
 
    linker is an optional void ** points to the beginning of the object
    that the return value points into.  Only needed if the object will
-   be modified, link in remprop().
+   be modified, like in remprop().
  */
 
 static sexpr **findprop(IC *ic, sexpr *name, sexpr *prop, void **linker) {
-    sexpr **pl = &(to_name(ic, name)->u.name.symbol->properties);
     void *linking_object = to_name(ic, name)->u.name.symbol;
+    sexpr **pl = &((symbol *)linking_object)->properties;
 
     while(!is_nil(ic, *pl)) {
         if(car(*pl) == prop ||
            (name_eq(ic->n_caseignoredp->u.name.symbol->value, ic->n_true) &&
-            name_eq(car(*pl), prop)))
+            name_eq(car(*pl), prop))) {
+            if(linker != NULL)
+                *linker = linking_object;
             return pl;
+        }
+        /* Property list items are in pairs, so we skip over two
+           members here.  *pl is the first cons of the pair.
+           cdr(*pl) is the second cons of the pair, and contains
+           the pointer to the next pair (or nil).
+           This pointer is located at &(cdr(cdr(*pl))), the 
+           address of the cdr pointer within cdr(*pl). */
         linking_object = cdr(*pl);
         pl = &(cdr(cdr(*pl)));
     }
 
     if(linker != NULL)
         *linker = linking_object;
-    return &ic->g_nil;
+    return pl;
 }
 
 void pprop(IC *ic, sexpr *name, sexpr *prop, sexpr *value) {
@@ -626,6 +654,8 @@ void pprop(IC *ic, sexpr *name, sexpr *prop, sexpr *value) {
 
     /* Make sure that name and prop are NAME's or can be
        turned into NAME's (numbers). */
+    protect_ptr(ic->g, (void **) &name);
+    protect_ptr(ic->g, (void **) &prop);
     name = to_name(ic, name);
     prop = to_name(ic, prop);
 
@@ -641,16 +671,22 @@ void pprop(IC *ic, sexpr *name, sexpr *prop, sexpr *value) {
            the cons cell after the current one to point to value. */
         STORE(ic->g, cdr(*pl_tail), car(cdr(*pl_tail)), value);
     }
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 sexpr *gprop(IC *ic, sexpr *name, sexpr *prop) {
     sexpr **pl_tail;
     /* Make sure that name and prop are NAME's or can be
        turned into NAME's (numbers). */
+    protect_ptr(ic->g, (void **) &name);
+    protect_ptr(ic->g, (void **) &prop);
     name = to_name(ic, name);
     prop = to_name(ic, prop);
 
     pl_tail = findprop(ic, name, prop, NULL);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     if(is_nil(ic, *pl_tail))
         return ic->g_nil;
     else
@@ -662,6 +698,8 @@ void remprop(IC *ic, sexpr *name, sexpr *prop) {
     sexpr **pl_tail;
     /* Make sure that name and prop are NAME's or can be
        turned into NAME's (numbers). */
+    protect_ptr(ic->g, (void **) &name);
+    protect_ptr(ic->g, (void **) &prop);
     name = to_name(ic, name);
     prop = to_name(ic, prop);
 
@@ -672,9 +710,12 @@ void remprop(IC *ic, sexpr *name, sexpr *prop) {
         eprint_sexpr(ic, prop);
         throw_error(ic, ic->continuation->line);
     } else {
+        /* Need two cdr's because we are removing two items from the
+           property list. */
         STORE(ic->g, linker, *pl_tail, cdr(cdr(*pl_tail)));
     }
-    
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 /* Helper function for returning a copy of the plist.
@@ -690,9 +731,13 @@ static sexpr *plist_helper(IC *ic, sexpr *l) {
 }
 
 sexpr *plist(IC *ic, sexpr *name) {
+    sexpr *ret = NULL;
+    protect_ptr(ic->g, (void **) &name);
     name = to_name(ic, name);
 
-    return plist_helper(ic, name->u.name.symbol->properties);
+    ret = plist_helper(ic, name->u.name.symbol->properties);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 
@@ -701,12 +746,12 @@ sexpr *plist(IC *ic, sexpr *name) {
 /* Procedure given to the garbage collector to mark "struct symbol" objects */
 void mark_symbol(GC *g, void *c, object_marker om, weak_pointer_registerer wpr) {
   struct symbol *s = (struct symbol *) c;
-  om(g, s->value);
-  om(g, s->function);
-  om(g, s->function_source);
-  om(g, s->properties);
-  om(g, s->canonical_name);
-  om(g, s->names);
+  om(g, (void **) &s->value);
+  om(g, (void **) &s->function);
+  om(g, (void **) &s->function_source);
+  om(g, (void **) &s->properties);
+  om(g, (void **) &s->canonical_name);
+  om(g, (void **) &s->names);
 }
 
 
@@ -721,17 +766,17 @@ struct symbol *mk_symbol(IC *ic,
                         struct sexpr *names,
                         int flags) {
   struct symbol *ret;
-  protect(ic->g, value);
-  protect(ic->g, function);
-  protect(ic->g, properties);
-  protect(ic->g, canonical_name);
-  protect(ic->g, names);
+  protect_ptr(ic->g, (void **) &value);
+  protect_ptr(ic->g, (void **) &function);
+  protect_ptr(ic->g, (void **) &properties);
+  protect_ptr(ic->g, (void **) &canonical_name);
+  protect_ptr(ic->g, (void **) &names);
   ret = (struct symbol *)ic_xmalloc(ic, sizeof(struct symbol), mark_symbol);
-  unprotect(ic->g);
-  unprotect(ic->g);
-  unprotect(ic->g);
-  unprotect(ic->g);
-  unprotect(ic->g);
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
   ret->value = value;
   ret->function = function;
   ret->function_source = function_source;
@@ -755,7 +800,7 @@ static void mark_array_members(GC *g, void *c, object_marker om, weak_pointer_re
     sexpr **members = (sexpr **) c;
 
     for( ; *members; members++)
-        om(g, *members);
+        om(g, (void **) members);
 }
 
 /* Create an ARRAY object. */
@@ -763,7 +808,7 @@ sexpr *array(IC *ic, int length, int origin) {
     int i;
     sexpr **members;
 
-    members = ic_xmalloc(ic, (length+1)*sizeof(sexpr *), mark_array_members);
+    members = (sexpr **) ic_xmalloc(ic, (length+1)*sizeof(sexpr *), mark_array_members);
 
     for(i = 0; i < length; i++)
         members[i] = ic->g_nil;
