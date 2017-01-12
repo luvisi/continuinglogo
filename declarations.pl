@@ -142,15 +142,17 @@ my $sexpr_type =
     # but the actual printable representation is stored in a NAME sexpr.
     # The 'head' points to the beginning of a string allocated by the
     # garbage collector.  We need it in order to properly mark the string.
-    # The 'name' points to the first character in the printable representation
-    # of this word, and  'length' is the number of characters.
-    # We mark 'head' and WE DO NOT mark 'name' during garbage collection.
-    # Operations like BUTFIRST can create NAME's whose 'name' points into
+    # 'start' is the index of the first character that we are using
+    # and 'length' is the number of characters.  This allows multiple
+    # NAME's to share the same string when we do lots of FIRST's and
+    # BUTFIRST's.
+    # We mark 'head'.
+    # Operations like BUTFIRST can create NAME's whose 'start' points into
     # the middle of another NAME's 'name'.
     [ 'struct', 'name', 1,
       [ 'struct symbol *', 'symbol', 1],
-      [ 'char *', 'head', 1 ],
-      [ 'char *', 'name', 0 ],
+      [ 'const char *', 'head', 1 ],
+      [ 'unsigned int', 'start', 0 ],
       [ 'unsigned int', 'length', 0]],
 
     # All numbers are represented as doubles.
@@ -188,7 +190,7 @@ my $sexpr_type =
 
     # Not user visible.  Used when output is being collected into a word.
     [ 'struct', 'byte_bufferp', 1,
-      [ 'byte_buffer *', 'byte_buffer', 1 ]],
+      [ 'byte_buffer *', 'bb', 1 ]],
 
     # The special value returned by procedures that don't return anything.
     [ 'struct', 'unbound', 0 ],
@@ -270,7 +272,11 @@ my $continuation_type =
       [ 'struct', 'apply_c', 1,
         [ 'struct sexpr *', 'oper', 1 ],
         [ 'struct sexpr *', 'exprs', 1 ],
-        [ 'struct sexpr *', 'values', 1 ],],
+        [ 'struct sexpr *', 'values', 1 ],
+        [ 'struct sexpr *', 'proc', 1 ],
+        [ 'struct sexpr *', 'funarg', 1 ],
+        [ 'struct sexpr *', 'macro', 1 ],
+        [ 'struct sexpr *', 'real_oper', 1 ],],
 
       # The top level continuation.  Causes eval() to return the value
       # to which the RETURN_C is applied.
@@ -496,7 +502,7 @@ sub make_markers {
 
     if($full) {
       # We are creating the full definition.
-      $ret .= "void mark_${type_name}(GC *g, void *c, object_marker om, weak_pointer_registerer wpr) {\n";
+      $ret .= "static void mark_${type_name}(GC *g, void *c, object_marker om, weak_pointer_registerer wpr) {\n";
       if(@mark_part_names) {
         # This version has parts that need marking.
         # "s" is a pointer to the main type, to which the (void *) is cast.
@@ -504,7 +510,7 @@ sub make_markers {
         # that needs to be marked.
         $ret .= '  ' . part_decl($type) .  ' *s = (' .
                        part_decl($type) . " *) c;\n" .
-                       join('', (map { "  om(g, s->" . $_ . ");\n" }
+                       join('', (map { "  om(g, (void **) &s->" . $_ . ");\n" }
                                      @mark_part_names));
       }
       $ret .= "}\n\n";
@@ -541,7 +547,13 @@ sub make_makers {
         # as an argument, and will take an argument for each simple type
         # contained in $type when tagged as a $type_name.
         my $protect_count = 0;
-        $ret .= part_decl($type) . " *${unsafe}mk_" . $type_name . '(IC *ic';
+        $ret .= "static inline \n" . 
+                "#ifdef __GNUC__\n" .
+                "#ifdef FORCE_INLINES\n" .
+                "__attribute__ ((__always_inline__))\n" .
+                "#endif\n" .
+                "#endif\n" .
+                part_decl($type) . " *${unsafe}mk_" . $type_name . '(IC *ic';
         for(my $i = 0; $i < @part_decls; $i++) {
           next if $short_part_names[$i] eq 't';
           $ret .= ', ' . $part_decls[$i] . ' ' . $short_part_names[$i];
@@ -551,10 +563,12 @@ sub make_makers {
 
         # All arguments to mk_* functions are protected from the garbage
         # collector during the call to allocate().
-        if(!$unsafe) {
+        #if(!$unsafe) {
+        # For copying collection, all arguments must be protected always.
+        if(!$unsafe || 1) {
           for(my $i = 0; $i < @part_names; $i++) {
             if((grep { $_ eq $part_names[$i] } @mark_part_names)) {
-              $ret .= '  protect(ic->g, ' . $short_part_names[$i] . ");\n";
+              $ret .= '  protect_ptr(ic->g, (void **) &' . $short_part_names[$i] . ");\n";
               $protect_count++;
             }
           }
@@ -569,9 +583,11 @@ sub make_makers {
         $ret .= '), mark_' . $type_name . ");\n";
   
         # The arguments are unprotected.
-        if(!$unsafe) {
+        #if(!$unsafe) {
+        # For copying collection, all arguments must be protected.
+        if(!$unsafe || 1) {
           for(my $i = 0; $i < $protect_count; $i++) {
-            $ret .= "  unprotect(ic->g);\n";
+            $ret .= "  unprotect_ptr(ic->g);\n";
           }
         }
   
@@ -588,14 +604,14 @@ sub make_makers {
         }
         $ret .= "  return ret;\n";
         $ret .= "}\n\n";
-      } else {
-        # We are just creating the declaration for mk_* and unsafe_mk_*
-        $ret .= part_decl($type) . " *${unsafe}mk_" . $type_name . '(IC *ic';
-        for(my $i = 0; $i < @part_decls; $i++) {
-          next if $short_part_names[$i] eq 't';
-          $ret .= ', ' . $part_decls[$i] . ' ' . $short_part_names[$i];
-        }
-        $ret .= ");\n";
+#      } else {
+#        # We are just creating the declaration for mk_* and unsafe_mk_*
+#        $ret .= part_decl($type) . " *${unsafe}mk_" . $type_name . '(IC *ic';
+#        for(my $i = 0; $i < @part_decls; $i++) {
+#          next if $short_part_names[$i] eq 't';
+#          $ret .= ', ' . $part_decls[$i] . ' ' . $short_part_names[$i];
+#        }
+#        $ret .= ");\n";
       }
     }
   }
@@ -629,7 +645,7 @@ print HEADER "\n";
 
 print HEADER "#ifndef STRUCTURES_H\n";
 print HEADER "#define STRUCTURES_H\n";
-print HEADER "#include \"gc.h\"\n";
+print HEADER "#include \"pcgc.h\"\n";
 print HEADER "#include \"interpreter.h\"\n";
 print HEADER "#include \"byte_buffer.h\"\n";
 print HEADER "typedef struct sexpr *(*efun)(IC *interp,\n";
@@ -637,8 +653,8 @@ print HEADER "                              struct sexpr *args);\n";
 for my $type ($sexpr_type, $continuation_type) {
     print HEADER make_enum($type);
     print HEADER make_declaration(0, $type), "\n";
-    print HEADER make_markers($type, 0);
-    print HEADER make_makers($type, 0);
+    print HEADER make_markers($type, 1);
+    print HEADER make_makers($type, 1);
 }
 print HEADER "#endif\n";
 close(HEADER);
@@ -668,8 +684,8 @@ print BODY "\n";
 
 print BODY "#include \"list_memory.h\"\n\n";
 print BODY "#include \"structures.h\"\n\n";
-for my $type ($sexpr_type, $continuation_type) {
-    print BODY make_markers($type, 1);
-    print BODY make_makers($type, 1);
-}
+#for my $type ($sexpr_type, $continuation_type) {
+#    print BODY make_markers($type, 1);
+#    print BODY make_makers($type, 1);
+#}
 close(BODY);
