@@ -3,6 +3,7 @@
 #define TURTLES_H
 
 #include <map>
+#include <execinfo.h>
 #include "wxui.h"
 #include "trig.h"
 
@@ -70,8 +71,6 @@ public:
         return false;
     }
 
-
-private:
     CriteriaType type;
     wxColour colour;
 };
@@ -94,6 +93,16 @@ public:
         turtle(turtle),
         criteria1(criteria1),
         criteria2(criteria2) { }
+
+    /* Used for TURTLE_PASTTOP, TURTLE_PASTBOTTOM, TURTLE_PASTLEFT,
+       TURTLE_PASTRIGHT. */
+    CollisionTestEvent(wxEventType eventType,
+                       int turtle,
+                       PixelCriteria criteria1) :
+        wxEvent(0, eventType),
+        turtle(turtle),
+        criteria1(criteria1) { }
+
     /* Used in TURTLE_TOUCHING.  Are any pixels matching criteria1 in
        turtle touching any pixels matching criteria2 in turtle2? */
     CollisionTestEvent(wxEventType eventType,
@@ -157,6 +166,10 @@ public:
 };
 
 wxDECLARE_EVENT(TURTLE_OVER, CollisionTestEvent);
+wxDECLARE_EVENT(TURTLE_PASTTOP, CollisionTestEvent);
+wxDECLARE_EVENT(TURTLE_PASTBOTTOM, CollisionTestEvent);
+wxDECLARE_EVENT(TURTLE_PASTLEFT, CollisionTestEvent);
+wxDECLARE_EVENT(TURTLE_PASTRIGHT, CollisionTestEvent);
 wxDECLARE_EVENT(TURTLEXY_OVER, CollisionTestEvent);
 wxDECLARE_EVENT(TURTLE_TOUCHING, CollisionTestEvent);
 wxDECLARE_EVENT(TURTLEXY_TOUCHING, CollisionTestEvent);
@@ -194,6 +207,8 @@ public:
     virtual void draw(wxBitmap &target, double x, double y,
                       double heading, double xscale, double yscale,
                       wxPen pen) = 0;
+    virtual wxRect2DDouble boundingbox(wxGraphicsMatrix transform) = 0;
+    
     /* Save the turtle's image into a file. */
     virtual void save(wxString &file) = 0;
     /* Are any pixels in this turtle that match criteria1 over any pixels
@@ -226,6 +241,7 @@ public:
     ~BitmapTurtle() { }
     virtual TurtleGuts *clone() { return new BitmapTurtle(bm, xoffset, yoffset); }
     virtual void draw(wxBitmap &target, double x, double y, double heading, double xscale, double yscale, wxPen pen);
+    virtual wxRect2DDouble boundingbox(wxGraphicsMatrix transform);
     virtual void save(wxString &file);
     virtual bool over(PixelCriteria criteria1,
                       PixelCriteria criteria2,
@@ -269,6 +285,7 @@ public:
     ~PathTurtle() { }
     virtual TurtleGuts *clone() { return new PathTurtle(path); }
     virtual void draw(wxBitmap &target, double x, double y, double heading, double xscale, double yscale, wxPen pen);
+    virtual wxRect2DDouble boundingbox(wxGraphicsMatrix transform);
     virtual void save(wxString &file) {}
     virtual bool over(PixelCriteria criteria1,
                       PixelCriteria criteria2,
@@ -373,17 +390,21 @@ public:
                 /* Handle wrap mode by drawing the turtle 9 times. */
                 for(xoff = -501; xoff <= 501; xoff += 501)
                     for(yoff = -501; yoff <= 501; yoff += 501)
-                        tg->draw(target,
-                                 x+xoff,
-                                 y+yoff,
-                                 heading+rotation,
-                                 xscale,
-                                 yscale,
-                                 pen);
-            } else {
-                tg->draw(target, x, y, heading+rotation, xscale, yscale, pen);
+                        if(xoff != 0 || yoff != 0)
+                            tg->draw(target,
+                                     x+xoff,
+                                     y+yoff,
+                                     heading+rotation,
+                                     xscale,
+                                     yscale,
+                                     pen);
             }
+            tg->draw(target, x, y, heading+rotation, xscale, yscale, pen);
         }
+    }
+
+    wxRect2DDouble boundingbox() {
+        return tg->boundingbox(matrix());
     }
 
     void drawtext(wxBitmap &target) {

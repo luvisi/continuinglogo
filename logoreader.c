@@ -52,6 +52,7 @@ static int reading_from_user(logoreader *lr) {
 }
 
 void linemode_terminal(logoreader *lr) {
+  protect_ptr(lr->ic->g, (void **) &lr);
   if(reading_from_user(lr)) {
       if(tty_blocking(fileno(lr->ifp)) < 0) {
          eprintf(lr->ic, "Error setting terminal to blocking mode");
@@ -62,10 +63,12 @@ void linemode_terminal(logoreader *lr) {
           throw_error(lr->ic, lr->ic->continuation->line);
       }
       lr->blocking = 1;
-    }
+  }
+  unprotect_ptr(lr->ic->g);
 }
 
 void charmode_blocking_terminal(logoreader *lr) {
+    protect_ptr(lr->ic->g, (void **) &lr);
     if(reading_from_user(lr)) {
         if(tty_blocking(fileno(lr->ifp)) < 0) {
            eprintf(lr->ic, "Error setting terminal to blocking mode");
@@ -77,9 +80,11 @@ void charmode_blocking_terminal(logoreader *lr) {
         }
         lr->blocking = 1;
     }
+    unprotect_ptr(lr->ic->g);
 }
 
 void charmode_nonblocking_terminal(logoreader *lr) {
+    protect_ptr(lr->ic->g, (void **) &lr);
     if(reading_from_user(lr)) {
         if(tty_nonblocking(fileno(lr->ifp)) < 0) {
            eprintf(lr->ic, "Error setting terminal to nonblocking mode");
@@ -91,6 +96,7 @@ void charmode_nonblocking_terminal(logoreader *lr) {
         }
         lr->blocking = 0;
     }
+    unprotect_ptr(lr->ic->g);
 }
 
 void logoread_from_user_terminal(logoreader *r) {
@@ -116,10 +122,13 @@ void charmode_nonblocking_wx(logoreader *lr) {
 }
 
 static int fetch_char_from_wx(logoreader *r) {
+    protect_ptr(r->ic->g, (void **) &r);
+
     int ret = 0;
 
     if(r->char_la_valid) {
         r->char_la_valid = 0;
+        unprotect_ptr(r->ic->g);
         return r->char_la;
     } else if(r->source_string == NULL ||
               r->source_string[r->source_position] == '\0') {
@@ -159,19 +168,20 @@ static int fetch_char_from_wx(logoreader *r) {
             ret = EOF;
         } else if(res == wxMSGQUEUE_NO_ERROR) {
             const char *cp = s.c_str();
-            STORE(r->ic->g,
-                  r,
-                  r->source_string,
-                  (char *) ic_xmalloc(r->ic,
-                                      strlen(cp) + 1,
-                                      mark_cstring));
-            strcpy(r->source_string, cp);
+            char *s = (char *) ic_xmalloc(r->ic,
+                                          strlen(cp) + 1,
+                                          mark_cstring);
+            protect_ptr(r->ic->g, (void **) &s);
+            strcpy(s, cp);
+
+            STORE(r->ic->g, r, r->source_string, s);
             r->source_position = 0;
             /* This assumes that source_string will never be
                empty.  We know this because wxui.cpp always
                adds a newline before sending us a string.
                This is sloppy but it works. */
             ret = r->source_string[r->source_position++];
+            unprotect_ptr(r->ic->g);
         }
     } else {
         ret = r->source_string[r->source_position++];
@@ -191,6 +201,7 @@ static int fetch_char_from_wx(logoreader *r) {
     if(r->logging_raw_line)
         add_to_byte_buffer(r->ic, r->raw_line, ret);
 
+    unprotect_ptr(r->ic->g);
     return ret;
 }
 
@@ -204,6 +215,8 @@ void logoread_from_user_wx(logoreader *lr) {
 /* This is the function for reading a character when the source is
    a file. */
 static int fetch_char_from_file(logoreader *r) {
+    protect_ptr(r->ic->g, (void **) &r);
+
     int ret;
 
     if(r->char_la_valid) {
@@ -240,6 +253,8 @@ static int fetch_char_from_file(logoreader *r) {
         if(r->logging_raw_line)
             add_to_byte_buffer(r->ic, r->raw_line, ret);
     }
+
+    unprotect_ptr(r->ic->g);
     return ret;
 }
 
@@ -257,24 +272,27 @@ void logoread_from_file(logoreader *lr, FILE *fp) {
 
 /* This is the function for reading from a string. */
 static int fetch_char_from_string(logoreader *r) {
+    protect_ptr(r->ic->g, (void **) &r);
     int ret;
 
     if(r->char_la_valid) {
         r->char_la_valid = 0;
         ret = r->char_la;
     } else if(r->source_string[r->source_position] == '\0') {
-        return EOF;
+        ret = EOF;
     } else {
         ret = r->source_string[r->source_position++];
         if(r->logging_raw_line)
             add_to_byte_buffer(r->ic, r->raw_line, ret);
     }
+
+    unprotect_ptr(r->ic->g);
     return ret;
 }
 
 /* Set the input to come from a string. */
 void logoread_from_string(logoreader *lr, char *source) {
-    lr->source_string = source;
+    STORE(lr->ic->g, lr, lr->source_string, source);
     lr->source_position = 0;
     lr->char_reader = fetch_char_from_string;
     lr->char_la_valid = 0;
@@ -317,6 +335,11 @@ void maybe_prompt_wx(logoreader *lr, const char *prompt) {
 
 /* Read a token. */
 static sexpr *gettoken(logoreader *r) {
+  protect_ptr(r->ic->g, (void **) &r);
+
+  sexpr *ret = NULL;
+  protect_ptr(r->ic->g, (void **) &ret);
+
   int ch;
   const char *token_terminators; /* List of non-blanks that will terminate
                                     the current token. */
@@ -330,7 +353,8 @@ static sexpr *gettoken(logoreader *r) {
   /* If there's a valid lookahead, use it. */
   if(r->token_la_valid) {
     r->token_la_valid = 0;
-    return word_from_byte_buffer(r->ic, r->bb);
+    STORE(r->ic->g, NULL, ret, word_from_byte_buffer(r->ic, r->bb));
+    goto end;
   }
 
   /* Before reading a token, there are no escapes. */
@@ -345,7 +369,8 @@ static sexpr *gettoken(logoreader *r) {
   /* Skip whitespaces and comments. */
   for(;;) {
     if(ch == EOF) {
-        return NULL;
+        STORE(r->ic->g, NULL, ret, NULL);
+        goto end;
     } else if(ch == ';') {
       /* We have a comment.  Skip the rest of the line.
          Lines with comments can be continued, but the continuation
@@ -362,7 +387,10 @@ static sexpr *gettoken(logoreader *r) {
         /* A ~ at the end of the line causes the next to be read and appended
            to this one. */
         int ch2 = r->char_reader(r);
-        if(ch2 == EOF) return NULL;
+        if(ch2 == EOF) {
+            STORE(r->ic->g, NULL, ret, NULL);
+            goto end;
+        }
         if(ch2 == '\n') {
             r->ic->maybe_prompt(r, "~ ");
             ch = r->char_reader(r);
@@ -432,7 +460,8 @@ static sexpr *gettoken(logoreader *r) {
         put_back_char(r, ch2);
     }
 
-    return word_from_byte_buffer(r->ic, r->bb);
+    STORE(r->ic->g, NULL, ret, word_from_byte_buffer(r->ic, r->bb));
+    goto end;
   }
   skip_specials:
 
@@ -453,7 +482,8 @@ static sexpr *gettoken(logoreader *r) {
         else
             r->last_break = BROKE_ON_NONSPACE;
         put_back_char(r, ch);
-        return word_from_byte_buffer(r->ic, r->bb);
+        STORE(r->ic->g, NULL, ret, word_from_byte_buffer(r->ic, r->bb));
+        goto end;
     } else if(ch == '|') {
         /* There has been an escape.  Used to distinguish |[| from [ */
         r->token_escaped = 1;
@@ -512,6 +542,13 @@ static sexpr *gettoken(logoreader *r) {
         ch = r->char_reader(r);
     }
   }
+
+
+  end:
+  unprotect_ptr(r->ic->g);
+  unprotect_ptr(r->ic->g);
+
+  return ret;
 }
 
 
@@ -520,7 +557,13 @@ static sexpr *logoreadarray(logoreader *lr);
 
 /* This is the main procedure to read a single Logo object. */
 sexpr *logoreadobj(logoreader *lr) {
-  sexpr *token;
+  protect_ptr(lr->ic->g, (void **) &lr);
+
+  sexpr *token = gettoken(lr);
+  protect_ptr(lr->ic->g, (void **) &token);
+
+  sexpr *ret = token;
+  protect_ptr(lr->ic->g, (void **) &ret);
 
   /* These are used by strtod().  Number is the return value, and
      unparsed is set to the portion of the string not parsed.
@@ -529,16 +572,26 @@ sexpr *logoreadobj(logoreader *lr) {
   double number;
   char *unparsed, *possible_number;
 
-  token = gettoken(lr);
+  if(token == NULL) {
+    STORE(lr->ic->g, NULL, ret, lr->ic->eof);
+    goto end;
+  }
 
-  if(token == NULL) return lr->ic->eof;
-  if(name_eq(token, lr->ic->n_newline)) return lr->ic->eof;
+  if(name_eq(token, lr->ic->n_newline)) {
+    STORE(lr->ic->g, NULL, ret, lr->ic->eof);
+    goto end;
+  }
 
   /* Check for sentences or arrays. */
-  if(name_eq(token, lr->ic->n_lbracket) && !lr->token_escaped)
-    return logoreadlist(lr, lr->ic->n_rbracket);
-  if(name_eq(token, lr->ic->n_lbrace) && !lr->token_escaped)
-    return logoreadarray(lr);
+  if(name_eq(token, lr->ic->n_lbracket) && !lr->token_escaped) {
+    STORE(lr->ic->g, NULL, ret, logoreadlist(lr, lr->ic->n_rbracket));
+    goto end;
+  }
+
+  if(name_eq(token, lr->ic->n_lbrace) && !lr->token_escaped) {
+    STORE(lr->ic->g, NULL, ret, logoreadarray(lr));
+    goto end;
+  }
 
   /* Check to see if it's a valid number. */
   possible_number = get_cstring(lr->ic, token);
@@ -546,29 +599,46 @@ sexpr *logoreadobj(logoreader *lr) {
      strcasecmp(possible_number, "infinity") &&
      strcasecmp(possible_number, "nan")) {
     number = strtod(possible_number, &unparsed);
-    if(unparsed != possible_number && *unparsed == '\0')
-      return mk_number(lr->ic, number);
+    if(unparsed != possible_number && *unparsed == '\0') {
+      STORE(lr->ic->g, NULL, ret, mk_number(lr->ic, number));
+      goto end;
+    }
   }
 
-  /* Return as is. */
-  return token;
+  end:
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  return ret;
 }
 
 /* To read an array, we read a '}' terminated list and convert it
    into an array. */
 static sexpr *logoreadarray(logoreader *lr) {
+  protect_ptr(lr->ic->g, (void **) &lr);
+
   sexpr *item_list = logoreadlist(lr, lr->ic->n_rbrace);
+  protect_ptr(lr->ic->g, (void **) &item_list);
+
   int origin = 1;
 
   /* Look at the next token for @<origin> */
   sexpr *token = gettoken(lr);
+  protect_ptr(lr->ic->g, (void **) &token);
+
   if(token->u.name.length >= 2 &&
      token->u.name.head[token->u.name.start] == '@') {
       origin = atoi(get_cstring(lr->ic, butfirst(lr->ic, token)));
   } else {
       putback_token(lr, token);
   }
-  return list_to_array(lr->ic, item_list, origin);
+
+  sexpr *ret = list_to_array(lr->ic, item_list, origin);
+
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  return ret;
 }
 
 /* Read a list terminated by ending_token.  To read a list,
@@ -576,29 +646,54 @@ static sexpr *logoreadarray(logoreader *lr) {
    To read an array, ending_token will be '}' (AKA ic->n_rbrace).
  */
 static sexpr *logoreadlist(logoreader *lr, sexpr *ending_token) {
-  sexpr *first;
+  protect_ptr(lr->ic->g, (void **) &lr);
+  protect_ptr(lr->ic->g, (void **) &ending_token);
+
+  sexpr *first = NULL;
+  protect_ptr(lr->ic->g, (void **) &first);
+  sexpr *rest = NULL;
+  protect_ptr(lr->ic->g, (void **) &rest);
+
+  sexpr *ret = NULL;
+  protect_ptr(lr->ic->g, (void **) &ret);
+
   sexpr *token = gettoken(lr);
+  protect_ptr(lr->ic->g, (void **) &token);
 
   /* Skip newlines. */
   while(token != NULL && name_eq(token, lr->ic->n_newline)) {
       lr->ic->maybe_prompt(lr, "~ ");
-      token = gettoken(lr);
+      STORE(lr->ic->g, NULL, token, gettoken(lr));
   }
 
-  if(token == NULL) return lr->ic->eof;
-
+  if(token == NULL) {
+    STORE(lr->ic->g, NULL, ret, lr->ic->eof);
+    goto end;
+  }
+  
   /* If we're at the end, return the empty list. */
-  if(name_eq(token, ending_token) && !lr->token_escaped)
-    return lr->ic->g_nil;
+  if(name_eq(token, ending_token) && !lr->token_escaped) {
+    STORE(lr->ic->g, NULL, ret, lr->ic->g_nil);
+    goto end;
+  }
 
   /* Otherwise, read an object, read the rest of the list, and
      cons the object onto the beginning of the list.
      The object must be protected from garbage collection that
      can occur while reading the rest of the list. */
   putback_token(lr, token);
-  first = logoreadobj(lr); /* Must force evaluation order */
-  protect_ptr(lr->ic->g, (void **) &first);
-  sexpr *ret = cons(lr->ic, first, logoreadlist(lr, ending_token));
+  STORE(lr->ic->g, NULL, first, logoreadobj(lr)); /* Must force evaluation order */
+  STORE(lr->ic->g, NULL, rest, logoreadlist(lr, ending_token));
+
+  STORE(lr->ic->g, NULL, ret, cons(lr->ic, first, rest));
+
+  end:
+
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
   unprotect_ptr(lr->ic->g);
   return ret;
 }
@@ -606,58 +701,107 @@ static sexpr *logoreadlist(logoreader *lr, sexpr *ending_token) {
 /* Used by READLIST, the primitive that reads a newline terminated list
    of objects. */
 static sexpr *readlisthelper(logoreader *lr, int parencount) {
-  sexpr *first;
-  sexpr *token = gettoken(lr);
+    protect_ptr(lr->ic->g, (void **) &lr);
+    IC *ic = lr->ic;
 
-  /* Skip newlines if we have outstanding parenthesis. */
-  while(token != NULL && name_eq(token, lr->ic->n_newline) &&
-        parencount > 0) {
-      lr->ic->maybe_prompt(lr, "~ ");
-      token = gettoken(lr);
-  }
+    sexpr *ret = cons(ic, ic->g_nil, ic->g_nil);
+    protect_ptr(lr->ic->g, (void **) &ret);
+
+    sexpr *tail = ret;
+    protect_ptr(lr->ic->g, (void **) &tail);
+
+    sexpr *token = gettoken(lr);
+    protect_ptr(lr->ic->g, (void **) &token);
+
+    sexpr *obj = NULL;
+    protect_ptr(lr->ic->g, (void **) &obj);
+
+
+    for(;;) {
+        /* Skip newlines if we have outstanding parenthesis. */
+        while(token != NULL && name_eq(token, lr->ic->n_newline) &&
+              parencount > 0) {
+            lr->ic->maybe_prompt(lr, "~ ");
+            STORE(lr->ic->g, NULL, token, gettoken(lr));
+        }
   
-  if(token == NULL) return lr->ic->g_nil;
+        if(token == NULL) {
+            if(parencount > 0) {
+                STORE(ic->g, NULL, ret, cons(ic, ic->g_nil, ic->g_nil));
+            }
+            goto end;
+        }
 
-  /* Found a newline without outstanding parenthesis.  We're done. */
-  if(name_eq(token, lr->ic->n_newline) && parencount <= 0)
-      return lr->ic->g_nil;
-  else if(name_eq(token, lr->ic->n_lparen))
-      parencount++;
-  else if(name_eq(token, lr->ic->n_rparen) && parencount > 0)
-      parencount--;
+        /* Found a newline without outstanding parenthesis.  We're done. */
+        if(name_eq(token, lr->ic->n_newline) && parencount <= 0) {
+            goto end;
+        } else if(name_eq(token, lr->ic->n_lparen)) {
+            parencount++;
+        } else if(name_eq(token, lr->ic->n_rparen) && parencount > 0) {
+            parencount--;
+        }
 
-  /* Otherwise, read an object, read a list, and cons the object
-     onto the list. Must protect the object from garbage collection
-     that may occur during the recursive call to readlisthelper(). */
-  putback_token(lr, token);
-  first = logoreadobj(lr); /* Must force evaluation order */
-  protect_ptr(lr->ic->g, (void **) &first);
-  sexpr *ret = cons(lr->ic, first, readlisthelper(lr, parencount));
-  unprotect_ptr(lr->ic->g);
-  return ret;
+        putback_token(lr, token);
+        STORE(lr->ic->g, NULL, obj, logoreadobj(lr));
+        push_back(ic, &tail, obj);
+
+        STORE(lr->ic->g, NULL, token, gettoken(lr));
+    }
+
+    end:
+
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+  
+    return cdr(ret);
 }
 
 
 /* This implements the READLIST primitive.  It reads a newline terminated
    list of Logo objects. */
 sexpr *readlist(logoreader *lr) {
-  sexpr *token;
+  protect_ptr(lr->ic->g, (void **)&lr);
   IC *ic = lr->ic;
+
+  sexpr *token = NULL;
+  protect_ptr(lr->ic->g, (void **)&token);
+
+  sexpr *ret = NULL;
+  protect_ptr(lr->ic->g, (void **)&ret);
 
   ic->linemode(lr);
 
-  token = gettoken(lr);
-  if(token == NULL) return lr->ic->n_empty;
+  STORE(ic->g, NULL, token, gettoken(lr));
+  if(token == NULL) {
+    STORE(ic->g, NULL, ret, lr->ic->n_empty);
+    goto end;
+  }
 
   putback_token(lr, token);
-  return readlisthelper(lr, 0);
+  STORE(ic->g, NULL, ret, readlisthelper(lr, 0));
+
+  end:
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
+  return ret;
 }
 
 /* Read in a LINE of a procedure.  Create a line that contains
    the procedure name, a word containing the raw line, and a parsed
    version of the line. */
 sexpr *readline(logoreader *lr, sexpr *procedure, sexpr *prompt) {
-  sexpr *list, *line = lr->ic->eof;
+  protect_ptr(lr->ic->g, (void **)&lr);
+  protect_ptr(lr->ic->g, (void **)&procedure);
+  protect_ptr(lr->ic->g, (void **)&prompt);
+
+  IC *ic = lr->ic;
+
+  sexpr *line = lr->ic->eof;
+  protect_ptr(lr->ic->g, (void **)&line);
 
   /* Tell the char reading function to log the characters read. */
   lr->logging_raw_line = 1;
@@ -668,19 +812,32 @@ sexpr *readline(logoreader *lr, sexpr *procedure, sexpr *prompt) {
      during the call to word_from_byte_buffer() below.
      Readlist returns the empty word (not list) on EOF. */
   lr->ic->maybe_prompt(lr, get_cstring(lr->ic, prompt));
-  list = readlist(lr);
+
+  sexpr *list = readlist(lr);
   protect_ptr(lr->ic->g, (void **) &list);
-  if(name_eq(list, lr->ic->n_empty)) goto exit;
 
-  /* Create the LINE.  The word from the byte_bytter is the
-     raw line. */
-  line = mk_line(lr->ic, word_from_byte_buffer(lr->ic, lr->raw_line),
-                         list,
-                         procedure);
+  if(!name_eq(list, lr->ic->n_empty)) {
 
-  exit:
+      /* Create the LINE.  The word from the byte_bytter is the
+         raw line. */
+
+      sexpr *word = word_from_byte_buffer(lr->ic, lr->raw_line);
+      protect_ptr(lr->ic->g, (void **) &word);
+
+      STORE(ic->g, NULL,
+            line,
+            mk_line(lr->ic, word, list, procedure));
+      unprotect_ptr(lr->ic->g);
+
+  }
+
   /* Cleanup and return the line. */
   unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+  unprotect_ptr(lr->ic->g);
+
   lr->logging_raw_line = 0;
   clear_byte_buffer(lr->raw_line);
   return line;
@@ -690,24 +847,34 @@ sexpr *readline(logoreader *lr, sexpr *procedure, sexpr *prompt) {
 /* Read a line and return it as a word.
    Returns the empty list on EOF. */
 sexpr *readword(logoreader *lr) {
+    protect_ptr(lr->ic->g, (void **)&lr);
     IC *ic = lr->ic;
+
     byte_buffer *bb = mk_byte_buffer(lr->ic);
+    protect_ptr(lr->ic->g, (void **)&bb);
+
     int ch;
 
     ic->linemode(lr);
 
     ch = lr->char_reader(lr);
 
+    sexpr *ret = NULL;
+    protect_ptr(lr->ic->g, (void **)&ret);
+
     for(;;) {
         if(ch == EOF) {
             /* Return the empty list (not a word) on EOF. */
-            return ic->g_nil;
+            STORE(ic->g, NULL, ret, ic->g_nil);
+            goto end;
         } else if(ch == '\\') {
             /* Process backslash escapes.  
                The character following a backslash is kept as is. */
             ch = lr->char_reader(lr);
-            if(ch == EOF)
-                return ic->g_nil;
+            if(ch == EOF) {
+                STORE(ic->g, NULL, ret, ic->g_nil);
+                goto end;
+            }
             add_to_byte_buffer(ic, bb, ch);
 
             /* If the character after the backslash is a newline, we keep
@@ -735,7 +902,8 @@ sexpr *readword(logoreader *lr) {
                         lr->ic->maybe_prompt(lr, "\\ ");
 
                     if(ch == EOF) {
-                        return ic->g_nil;
+                        STORE(ic->g, NULL, ret, ic->g_nil);
+                        goto end;
                     } else {
                         add_to_byte_buffer(ic, bb, ch);
                         ch = lr->char_reader(lr);
@@ -765,20 +933,35 @@ sexpr *readword(logoreader *lr) {
         } else if(ch == '\n') {
             /* We found the end of the line.  Create the word
                and return it. */
-            return word_from_byte_buffer(ic, bb);
+            STORE(ic->g, NULL, ret, word_from_byte_buffer(ic, bb));
+            goto end;
         } else {
             /* Default case, add, read, and try again. */
             add_to_byte_buffer(ic, bb, ch);
             ch = lr->char_reader(lr);
         }
     }
+
+    end:
+
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    return ret;
 }
 
 /* Read a raw line.  No escape processing is performed.
    We just read until we get a newline. */
 sexpr *readrawline(logoreader *lr) {
+    protect_ptr(lr->ic->g, (void **)&lr);
+
     IC *ic = lr->ic;
     byte_buffer *bb = mk_byte_buffer(lr->ic);
+    protect_ptr(lr->ic->g, (void **)&bb);
+
+    sexpr *ret = NULL;
+    protect_ptr(lr->ic->g, (void **)&ret);
+
     int ch;
 
     ic->linemode(lr);
@@ -788,21 +971,35 @@ sexpr *readrawline(logoreader *lr) {
     for(;;) {
         if(ch == EOF) {
             /* On EOF return the empty list. */
-            return ic->g_nil;
+            STORE(ic->g, NULL, ret, ic->g_nil);
+            goto end;
         } else if(ch == '\n') {
             /* Done on newline. */
-            return word_from_byte_buffer(ic, bb);
+            STORE(ic->g, NULL, ret, word_from_byte_buffer(ic, bb));
+            goto end;
         } else {
             /* All other characters we keep. */
             add_to_byte_buffer(ic, bb, ch);
             ch = lr->char_reader(lr);
         }
     }
+
+    end:
+
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    return ret;
 }
 
 /* READCHAR - read one character.
    Use cbreak mode if reading from a terminal. */
 sexpr *readchar(logoreader *lr) {
+    protect_ptr(lr->ic->g, (void **)&lr);
+
+    sexpr *ret = NULL;
+    protect_ptr(lr->ic->g, (void **)&ret);
+
     IC *ic = lr->ic;
     int ch;
     char cch;
@@ -811,43 +1008,63 @@ sexpr *readchar(logoreader *lr) {
 
     ch = lr->char_reader(lr);
 
-    if(ch == EOF)
-        return ic->g_nil;
+    if(ch == EOF) {
+        STORE(ic->g, NULL, ret, ic->g_nil);
+        goto end;
+    }
 
     cch = ch;
-    return intern_len(ic, NULL, &cch, 1);
+    STORE(ic->g, NULL, ret, intern_len_static(ic, &cch, 0, 1));
+
+    end:
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    return ret;
 }
 
 /* READCHARS reads a given number of bytes.
    Uses cbreak mode if we are reading from a terminal. */
 sexpr *readchars(logoreader *lr, int count) {
+    protect_ptr(lr->ic->g, (void **)&lr);
+
+    sexpr *ret = NULL;
+    protect_ptr(lr->ic->g, (void **)&ret);
+
     IC *ic = lr->ic;
     int ch, i;
+
     byte_buffer *bb = mk_byte_buffer(ic);
-    sexpr *ret;
+    protect_ptr(lr->ic->g, (void **)&bb);
 
     ic->charmode_blocking(lr);
 
     for(i = 0; i < count; i++) {
         ch = lr->char_reader(lr);
         if(ch == EOF) {
-            ret = ic->g_nil;
-            goto exit;
+            STORE(ic->g, NULL, ret, ic->g_nil);
+            goto end;
         }
         add_to_byte_buffer(ic, bb, ch);
     }
 
-    ret = word_from_byte_buffer(ic, bb);
+    STORE(ic->g, NULL, ret, word_from_byte_buffer(ic, bb));
 
-    exit:
+    end:
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
     return ret;
 }
 
 /* Is there a keystroke waiting for us?
    Use cbreak nonblocking mode if we are reading from a terminal. */
 sexpr *keyp(logoreader *lr) {
+    protect_ptr(lr->ic->g, (void **)&lr);
+
+    IC *ic = lr->ic;
     int ch;
     sexpr *ret;
+    protect_ptr(lr->ic->g, (void **)&ret);
 
     if(lr->char_la_valid)
         return lr->ic->n_true;
@@ -858,17 +1075,22 @@ sexpr *keyp(logoreader *lr) {
 
     ch = lr->char_reader(lr);
     if(ch == EOF) {
-        ret = lr->ic->n_false;
+        STORE(ic->g, NULL, ret, lr->ic->n_false);
+        goto end;
     } else {
         put_back_char(lr, ch);
-        ret = lr->ic->n_true;
+        STORE(ic->g, NULL, ret, lr->ic->n_true);
     }
+
+    end:
 
     /* Switch back to blocking mode.
        Stay in cbreak mode.  If we switch back to cooked
        mode the keystroke will be flushed. */
     lr->ic->charmode_blocking(lr);
 
+    unprotect_ptr(lr->ic->g);
+    unprotect_ptr(lr->ic->g);
     return ret;
 }
 
@@ -884,14 +1106,24 @@ static void mark_logoreader(GC *g, void *o, object_marker om, weak_pointer_regis
 
 /* Create a logoreader. */
 logoreader *mk_logoreader(IC *ic) {
+  byte_buffer *bb = mk_byte_buffer(ic);       /* For building tokens. */
+  protect_ptr(ic->g, (void **)&bb);
+  
+  byte_buffer *raw_line = mk_byte_buffer(ic); /* For logging the raw line during a
+                                           READLINE. */
+  protect_ptr(ic->g, (void **)&raw_line);
+
+  
   logoreader *r = (logoreader *)ic_xmalloc(ic, sizeof(logoreader), mark_logoreader);
   r->ic = ic;
-  r->bb = mk_byte_buffer(ic);       /* For building tokens. */
-  r->raw_line = mk_byte_buffer(ic); /* For logging the raw line during a
-                                       READLINE. */
+  r->bb = bb;
+  r->raw_line = raw_line;
   r->source_string = NULL;
   r->logging_raw_line = 0;
   r->token_la_valid = 0;
   r->last_break = BROKE_ON_SPACE;
+
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
   return r;
 }

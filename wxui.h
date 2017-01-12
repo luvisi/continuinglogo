@@ -36,6 +36,9 @@ extern wxColour BackgroundColour;
 
 #include "turtles.h"
 
+typedef wxVector<PixelCriteria> PixelCriteriaVector;
+typedef wxVector<int> IntVector;
+
 /* DrawEvent's are sent to the GUI thread by the interpreter thread
    to influence the display by drawing something or giving a turtle
    an instruction or some such.
@@ -100,13 +103,26 @@ public:
     DrawEvent(wxEventType eventType, int turtle,
               unsigned char red, unsigned char green, unsigned char blue)
         : wxEvent(0, eventType), turtle(turtle), red(red), green(green), blue(blue) { }
+
+    /* Used by MOVEUNTIL */
+    DrawEvent(wxEventType eventType, int turtle, double angle,
+              double distance, double stepsize,
+              PixelCriteriaVector criteria,
+              IntVector turtles)
+        : wxEvent(0, eventType), turtle(turtle), angle(angle),
+          distance(distance), stepsize(stepsize),
+          criteria(criteria), turtles(turtles) { }
+
     virtual wxEvent *Clone() const { return new DrawEvent(*this); }
     int turtle;
     wxString s;
     double x1, y1, x2, y2, angle, radius, distance;
+    double stepsize;
     double xcenter, ycenter;
     unsigned char red, green, blue;
     bool transparent;
+    PixelCriteriaVector criteria;
+    IntVector turtles;
 };
 
 /* Declare the events. */
@@ -167,6 +183,7 @@ wxDECLARE_EVENT(GETTEXT, DrawEvent);
 wxDECLARE_EVENT(STAMP, DrawEvent);
 wxDECLARE_EVENT(COLORUNDER, DrawEvent);
 wxDECLARE_EVENT(XYCOLORUNDER, DrawEvent);
+wxDECLARE_EVENT(MOVEUNTIL, DrawEvent);
 
 
 /*
@@ -355,9 +372,16 @@ public:
                                                    background pixel under
                                                    the turtle relative (x, y)
                                                    coordinate. */
+    void OnMoveUntil(DrawEvent& event);         /* Move until a certain
+                                                   condition is true. */
 
     /* Is the turtle over any pixels of a given color? */
     void OnOver(CollisionTestEvent& event);
+
+    void OnPasttop(CollisionTestEvent& event);
+    void OnPastbottom(CollisionTestEvent& event);
+    void OnPastleft(CollisionTestEvent& event);
+    void OnPastright(CollisionTestEvent& event);
 
     /* Is a particular pixel in the turtle over a given color? */
     void OnXyOver(CollisionTestEvent& event);
@@ -396,7 +420,6 @@ private:
     wxTextCtrl *text;          /* Logged input and output */
 
     InterpreterThread *interpreterThread; /* Interpreter thread */
-    AudioThread *audioThread;             /* Audio thread */
     StringQueue queue;         /* Sends typed input to interpreter thread */
     StringQueue editedQueue;   /* Sends text edited w/popup to interpreter
                                   thread */
@@ -404,7 +427,6 @@ private:
     StringVector history;      /* Input history */
     StringVector::const_iterator iterator; /* Current history position */
     bool iterator_valid; /* Is "iterator" currently usable? */
-    void ShutDown();
     bool autorefresh; /* Are we refreshing the canvas automatically?
                          Turning refresh off while doing lots of drawing
                          can speed things up. */
@@ -446,9 +468,20 @@ private:
     std::map<int, bool> keysLifted; /* Which keys have been lifted. */
 };
 
+extern AudioThread *audioThread;             /* Audio thread */
+extern RecordingThread *recordingThread;     /* Recording thread */
+
 /* This informs wxWidgets that the wxApp object for this application
    will be a ContinuingLogoApp. */
 wxDECLARE_APP(ContinuingLogoApp);
+
+class ContinuingLogoAppConsole: public wxAppConsole
+{
+public:
+    virtual bool OnInit();
+    void OnClose(wxCloseEvent& event);          /* Window close button. */
+    InterpreterThread *interpreterThread; /* Interpreter thread */
+};
 
 /* Custon window IDs for use in generating GUI events. */
 enum

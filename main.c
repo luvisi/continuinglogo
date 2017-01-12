@@ -38,24 +38,22 @@
 #include "io.h"
 #include "ttymodes.h"
 #include "main.h"
+#include "structures.h"
 
 #include <pthread.h>
 #define GC_THREADS
 #include <gc.h>
 
 /* Argument descriptions for getopt_long() */
-const char *optstring = "a:sniw:lth";
-/* const char *optstring = "a:sniw:lthCc"; */
+const char *optstring = "a:sniw:lthCc";
 static const struct option long_options[] = {
   { "gc-allocations-per-collection", required_argument, NULL, 'a' },
   { "gc-stop-the-world",             no_argument,       NULL, 's' },
   { "no-init",                       no_argument,       NULL, 'n' },
   { "no-logo-init",                  no_argument,       NULL, 'i' },
   { "gc-work-per-allocation",        required_argument, NULL, 'w' },
-#if 0
   { "gc-conservative",               no_argument,       NULL, 'C' },
   { "gc-copying",                    no_argument,       NULL, 'c' },
-#endif
   { "lisp",                          no_argument,       NULL, 'l' },
   { "terminal",                      no_argument,       NULL, 't' },
   { "help",                          no_argument,       NULL, 'h' },
@@ -69,12 +67,10 @@ void print_usage(char *progname) {
     fprintf(stderr, "Flags:\n");
     fprintf(stderr, "  -s, --gc-stop-the-world                     Run the garbage collector in\n");
     fprintf(stderr, "                                              stop the world mode\n");
-#if 0
     fprintf(stderr, "  -C, --gc-conservative                       Run the conservative garbage\n");
     fprintf(stderr, "                                              collector (DANGER!)\n");
     fprintf(stderr, "  -c, --gc-copying                            Use copying collector\n");
     fprintf(stderr, "\n");
-#endif
     fprintf(stderr, "  -a, --gc-allocations-per-collection=<n>     Perform a garbage collection\n");
     fprintf(stderr, "                                              every <n> allocations when\n");
     fprintf(stderr, "                                              in stop the world mode\n");
@@ -100,7 +96,10 @@ void print_usage(char *progname) {
    It is treated as Logo code if run_logo is true,
    and as Lisp code if run_logo is false. */
 void process_file(IC *ic, FILE *fp, int run_logo) {
-    sexpr *expr_line, *expr, *result;
+    sexpr *expr_line = NULL, *expr = NULL, *result = NULL;
+    protect_ptr(ic->g, (void **) &expr_line);
+    protect_ptr(ic->g, (void **) &expr);
+    protect_ptr(ic->g, (void **) &result);
 
     /* "|Top Level| is the "procedure" name we use for code executed
        at the top level.  It will be associated with lines read by
@@ -108,12 +107,11 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
        Procedure definitions are handled in initialize.txt, so
        (readline) is called from there with the procedure name while
        the procedure body is being read in. */
-    sexpr *toplevel = NULL, *prompt = NULL;
     int ch;
 
-    toplevel = intern(ic, "Top Level");
+    sexpr *toplevel = intern(ic, "Top Level");
     protect_ptr(ic->g, (void **) &toplevel);
-    prompt = intern(ic, "? ");
+    sexpr *prompt = intern(ic, "? ");
     protect_ptr(ic->g, (void **) &prompt);
 
     /* Set our input to be from the file we were passed. */
@@ -149,10 +147,10 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
             int stored_protect_ptr_count = ic->g->protect_ptr_count;
             if(setjmp(ic->abort)) {
                 ic->g->protect_ptr_count = stored_protect_ptr_count;
-                expr = result = ic->g_unbound;
-                protect_ptr(ic->g, (void **) &expr);
+                STORE(ic->g, NULL, expr, ic->g_unbound);
+                STORE(ic->g, NULL, result, ic->g_unbound);
             } else {
-                expr_line = readline(ic->lr, toplevel, prompt);
+                STORE(ic->g, NULL, expr_line, readline(ic->lr, toplevel, prompt));
 
                 /* If the user pressed Control-\ run PAUSE */
                 if(expr_line == ic->eof) {
@@ -162,20 +160,20 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
                         break;
                     } else {
                         paused = 0;
-                        expr_line = 
-                            mk_line(ic, ic->n_pause,
-                                        cons(ic, ic->n_pause, ic->g_nil),
-                                        toplevel);
+                        sexpr *pause_call = cons(ic, ic->n_pause, ic->g_nil);
+                        protect_ptr(ic->g, (void **)&pause_call);
+                        STORE(ic->g, NULL,
+                             expr_line,
+                             mk_line(ic, ic->n_pause,
+                                         pause_call,
+                                         toplevel));
+                        unprotect_ptr(ic->g);
                     }
                     signalLocker.Unlock();
                 }
 
-                /* Protect the line we read while we allocate the
-                   expression to evaluate. */
-                protect_ptr(ic->g, (void **) &expr_line);
-
                 /* Pull out the parsed version of the line. */
-                expr = expr_line->u.line.parsed_line;
+                STORE(ic->g, NULL, expr, expr_line->u.line.parsed_line);
 
                 /* If we are defining a procedure, transform
                    [to <proc> <arg> ...]
@@ -190,32 +188,42 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
                    outputing a value.
                  */
                 if(!is_nil(ic, expr) && name_eq(car(expr), ic->n_to)) {
-                    result = eval(ic,
-                      cons(ic, ic->n_begin,
-                               cons(ic, expr_line,
-                                        cons(ic, cons(ic, ic->n_create_logo_procedure,
-                                                          cons(ic, cons(ic, ic->n_quote,
-                                                                            cons(ic, expr_line, ic->g_nil)),
-                                                                    ic->g_nil)),
-                                                  ic->g_nil))),
-                      STOP_OK | NO_VALUE_OK);
+                    sexpr *quoted_line = listl(ic, ic->n_quote, expr_line, NULL);
+                    protect_ptr(ic->g, (void **)&quoted_line);
+
+                    sexpr *create_call = listl(ic, ic->n_create_logo_procedure, quoted_line, NULL);
+                    protect_ptr(ic->g, (void **)&create_call);
+
+                    sexpr *begin_call = listl(ic, ic->n_begin, expr_line, create_call, NULL);
+                    protect_ptr(ic->g, (void **)&begin_call);
+
+                    STORE(ic->g, NULL, result, eval(ic, begin_call, STOP_OK | NO_VALUE_OK));
+
+                    unprotect_ptr(ic->g);
+                    unprotect_ptr(ic->g);
+                    unprotect_ptr(ic->g);
                 } else if(!is_nil(ic, expr) &&
                           name_eq(car(expr), ic->n_dot_macro)) {
                     /* Same as above, but for a macro.  Transform
                        [.macro <proc> <arg> ...]
                        into
                        (begin <expr_line>
-                              (create_logo_procedure (quote <expr_line>)))
+                              (create_logo_macro (quote <expr_line>)))
                      */
-                    result = eval(ic,
-                      cons(ic, ic->n_begin,
-                               cons(ic, expr_line,
-                                        cons(ic, cons(ic, ic->n_create_logo_macro,
-                                                          cons(ic, cons(ic, ic->n_quote,
-                                                                            cons(ic, expr_line, ic->g_nil)),
-                                                                   ic->g_nil)),
-                                                  ic->g_nil))),
-                      STOP_OK | NO_VALUE_OK);
+                    sexpr *quoted_line = listl(ic, ic->n_quote, expr_line, NULL);
+                    protect_ptr(ic->g, (void **)&quoted_line);
+
+                    sexpr *create_call = listl(ic, ic->n_create_logo_macro, quoted_line, NULL);
+                    protect_ptr(ic->g, (void **)&create_call);
+
+                    sexpr *begin_call = listl(ic, ic->n_begin, expr_line, create_call, NULL);
+                    protect_ptr(ic->g, (void **)&begin_call);
+
+                    STORE(ic->g, NULL, result, eval(ic, begin_call, STOP_OK | NO_VALUE_OK));
+
+                    unprotect_ptr(ic->g);
+                    unprotect_ptr(ic->g);
+                    unprotect_ptr(ic->g);
                 } else {
                     /* Otherwise, we just evaluate the line.
                        This takes two calls to eval().  One to treeify
@@ -236,20 +244,24 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
 
                        This expression must return a value.
                      */
-                    sexpr *treeified = eval(ic,
-                      cons(ic, ic->n_begin,
-                               cons(ic, expr_line,
-                                        cons(ic, cons(ic, ic->n_treeify,
-                                                          cons(ic, cons(ic, ic->n_quote,
-                                                                            cons(ic, expr, ic->g_nil)),
-                                                                   ic->g_nil)),
-                                                 ic->g_nil))),
-                      OUTPUT_OK | VALUE_OK);
+
+                    sexpr *quoted_expr = listl(ic, ic->n_quote, expr, NULL);
+                    protect_ptr(ic->g, (void **)&quoted_expr);
+
+                    sexpr *treeify_call = listl(ic, ic->n_treeify, quoted_expr, NULL);
+                    protect_ptr(ic->g, (void **)&treeify_call);
+
+                    sexpr *begin_call = listl(ic, ic->n_begin, expr_line, treeify_call, NULL);
+                    protect_ptr(ic->g, (void **)&begin_call);
+
+                    sexpr *treeified = eval(ic, begin_call, OUTPUT_OK | VALUE_OK);
+                    protect_ptr(ic->g, (void **)&treeified);
+
                     if(treeified->t != CONS) {
                         /* If the treeified version doesn't contain anything,
                            then don't bother running it.  Just spin through
                            the loop again. */
-                        result = ic->g_unbound;
+                        STORE(ic->g, NULL, result, ic->g_unbound);
                     } else {
                         /* We have a treeified expression to run.
                            Set the input to come from the current input
@@ -257,45 +269,43 @@ void process_file(IC *ic, FILE *fp, int run_logo) {
                         read_from_file(ic, ic->input->u.filep.file);
                         logoread_from_file(ic->lr, ic->input->u.filep.file);
 
-                        /* Protect the treeified version from garbage
-                           collection while we allocate the expression
-                           to evaluate and evaluate it.
-
-                           The expression we evaluate is:
+                        /* The expression we evaluate is:
                              (begin <expr_line> . treeified)
                          */
-                        protect_ptr(ic->g, (void **) &treeified);
-                        result = eval(ic,
-                          cons(ic, ic->n_begin,
-                                   cons(ic, expr_line, treeified)),
-                          STOP_OK | NO_VALUE_OK);
-                        unprotect_ptr(ic->g);
+
+                        STORE(ic->g, NULL, begin_call,
+                              listl_prepend(ic, treeified,
+                                            ic->n_begin, expr_line, NULL));
+                        STORE(ic->g, NULL, result, eval(ic, begin_call, STOP_OK | NO_VALUE_OK));
                     }
+                    unprotect_ptr(ic->g);
+                    unprotect_ptr(ic->g);
+                    unprotect_ptr(ic->g);
+                    unprotect_ptr(ic->g);
                 }
             }
         } else {
             /* We are evaluating Lisp code.
                Read an object and eval() it. */
-            expr = readobj(ic);
+            STORE(ic->g, NULL, expr, readobj(ic));
             if(expr == ic->eof)
                 break;
-            protect_ptr(ic->g, (void **) &expr);
-            result = eval(ic, expr, STOP_OK | NO_VALUE_OK);
+            STORE(ic->g, NULL, result, eval(ic, expr, STOP_OK | NO_VALUE_OK));
         }
 
         /* We run statements, so they should not return values at the top
            level. */
         if(result != ic->g_unbound) {
-            protect_ptr(ic->g, (void **) &result);
             tprintf(ic, "You don't say what to do with ");
             tprint_sexpr(ic, result);
             tprintf(ic, " in ");
             tprint_sexpr(ic, expr);
             tprintf(ic, "\n");
-            unprotect_ptr(ic->g);
         }
-        unprotect_ptr(ic->g);
     }
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 }
@@ -312,12 +322,18 @@ static void sigquit_handler(int signal, siginfo_t *si, void *ctx) {
    paused = 1; 
 }
 
+static wxAppConsole *CreateContinuingLogoAppConsole() {
+	wxAppConsole::CheckBuildOptions(WX_BUILD_OPTIONS_SIGNATURE,
+                                    "your program");
+	return new ContinuingLogoAppConsole;
+}
+
 /* Global variables used for communication between main() and
    start_logo().  start_logo() is called directly by main() in
    terminal mode, but is run by an interpreter thread when
    running in GUI mode. */
 
-static IC *ic;
+IC *ic;
 static int gc_delay = 10000;
 static int read_initialization_file = 1;
 static int read_logo_initialization_file = 1;
@@ -331,10 +347,8 @@ int main(int argc, char *argv[], char *envp[]) {
     int opt;
     struct sigaction sigint_action, sigquit_action;
     int terminal_mode = 0;
-#if 0
     int use_conservative_collection = 0;
     int use_copying_collection = 0;
-#endif
 
     while ((opt = getopt_long(argc, argv, optstring, long_options, NULL)) !=
            -1) {
@@ -351,14 +365,12 @@ int main(int argc, char *argv[], char *envp[]) {
             case 's':
                 use_incremental_collection = 0;
                 break;
-#if 0
             case 'c':
                 use_copying_collection = 1;
                 break;
             case 'C':
                 use_conservative_collection = 1;
                 break;
-#endif
             case 'w':
                 work_per_allocation = atoi(optarg);
                 break;
@@ -381,14 +393,16 @@ int main(int argc, char *argv[], char *envp[]) {
     logo_argc = argc;
     logo_argv = argv;
 
-#if 0
+/*
     if(use_copying_collection)
         ic = mk_interpreter(gc_delay, create_copying_gc, terminal_mode);
     else if(use_conservative_collection)
         ic = mk_interpreter(gc_delay, create_conservative_gc, terminal_mode);
     else
-#endif
         ic = mk_interpreter(gc_delay, create_ms_gc, terminal_mode);
+*/
+
+    ic = mk_interpreter(gc_delay, create_copying_gc, terminal_mode);
 
     if(ic == NULL)
         return EXIT_FAILURE;
@@ -427,7 +441,9 @@ int main(int argc, char *argv[], char *envp[]) {
 
         /* Let logo code test :TERMINALP to see if we're in terminal
            mode. */
-        ic->n_terminalp->u.name.symbol->value = ic->n_true;
+        STORE(ic->g, ic->n_terminalp->u.name.symbol,
+                     ic->n_terminalp->u.name.symbol->value,
+                     ic->n_true);
 
         /* Choose the terminal mode IO procedures. */
         ic->output_printer = &terminal_vprintf;
@@ -438,13 +454,21 @@ int main(int argc, char *argv[], char *envp[]) {
         ic->charmode_nonblocking = &charmode_nonblocking_terminal;
         ic->maybe_prompt = &maybe_prompt_terminal;
 
+#if 0
         /* In terminal mode, we just run the interpreter directly
            and terminate when it finishes. */
         start_logo();
+#endif
+
+		wxAppInitializer wxTheAppInitializer((wxAppInitializerFunction)
+                                             CreateContinuingLogoAppConsole);
+        return wxEntry(argc, argv);
         return 0;
     } else {
         /* Set up :TERMINALP and IO procedures for wxWidgets GUI mode. */
-        ic->n_terminalp->u.name.symbol->value = ic->n_false;
+        STORE(ic->g, ic->n_terminalp->u.name.symbol,
+                     ic->n_terminalp->u.name.symbol->value,
+                     ic->n_false);
         ic->output_printer = &wx_vprintf;
         ic->read_from_user = &read_from_user_terminal;
         ic->logoread_from_user = &logoread_from_user_wx;

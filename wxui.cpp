@@ -3,9 +3,9 @@
 
 #include <iostream>
 #include <stdio.h>
-#include "wxui.h"
 #include "interpreter.h"
 #include "turtles.h"
+#include "wxui.h"
 #include <wx/filedlg.h>
 
 /* Custom events.  See wxui.h */
@@ -23,6 +23,8 @@ wxDEFINE_EVENT(LOADPICT, wxCommandEvent);
 wxMutex turtleConditionLocker;
 wxCondition turtleCondition(turtleConditionLocker);
 
+AudioThread *audioThread;             /* Audio thread */
+RecordingThread *recordingThread;     /* Recording thread */
 
 IntTurtleMap TurtleMap; /* Global Turtles container */
 IntShapeMap ShapeMap; /* Global shapes container */
@@ -88,8 +90,13 @@ wxDEFINE_EVENT(GETTEXT, DrawEvent);
 wxDEFINE_EVENT(STAMP, DrawEvent);
 wxDEFINE_EVENT(COLORUNDER, DrawEvent);
 wxDEFINE_EVENT(XYCOLORUNDER, DrawEvent);
+wxDEFINE_EVENT(MOVEUNTIL, DrawEvent);
 
 wxDEFINE_EVENT(TURTLE_OVER, CollisionTestEvent);
+wxDEFINE_EVENT(TURTLE_PASTTOP, CollisionTestEvent);
+wxDEFINE_EVENT(TURTLE_PASTBOTTOM, CollisionTestEvent);
+wxDEFINE_EVENT(TURTLE_PASTLEFT, CollisionTestEvent);
+wxDEFINE_EVENT(TURTLE_PASTRIGHT, CollisionTestEvent);
 wxDEFINE_EVENT(TURTLEXY_OVER, CollisionTestEvent);
 wxDEFINE_EVENT(TURTLE_TOUCHING, CollisionTestEvent);
 wxDEFINE_EVENT(TURTLEXY_TOUCHING, CollisionTestEvent);
@@ -113,7 +120,7 @@ bool ContinuingLogoApp::OnInit()
                         wxID_ANY,
                         "ContinuingLogo",
                         wxPoint(50, 50),
-                        wxSize(950, 550));
+                        wxSize(950, 600));
 
     /* Set up the menu bar. */
     wxMenu *menuFile = new wxMenu;
@@ -219,6 +226,9 @@ bool ContinuingLogoApp::OnInit()
     /* Return the color of the background pixel under the turtle relative
        (x, y) point. */
     Bind(XYCOLORUNDER, &ContinuingLogoApp::OnXyColorunder, this); 
+
+    /* Attempt to move until stopped by a condition. */
+    Bind(MOVEUNTIL, &ContinuingLogoApp::OnMoveUntil, this); 
 
     /* Repaint the canvas.  Sent after turtle state changes. */
     Bind(wxEVT_PAINT, &ContinuingLogoApp::OnPaint, this); 
@@ -346,6 +356,11 @@ bool ContinuingLogoApp::OnInit()
     /* Is the turtle over any pixels matching a criteria? */
     Bind(TURTLE_OVER, &ContinuingLogoApp::OnOver, this); 
 
+    Bind(TURTLE_PASTTOP, &ContinuingLogoApp::OnPasttop, this); 
+    Bind(TURTLE_PASTBOTTOM, &ContinuingLogoApp::OnPastbottom, this); 
+    Bind(TURTLE_PASTLEFT, &ContinuingLogoApp::OnPastleft, this); 
+    Bind(TURTLE_PASTRIGHT, &ContinuingLogoApp::OnPastright, this); 
+
     /* Is a particular pixel (turtle relative coordinates) over
        a pixel matching a criteria? */
     Bind(TURTLEXY_OVER, &ContinuingLogoApp::OnXyOver, this); 
@@ -446,10 +461,16 @@ bool ContinuingLogoApp::OnInit()
                      0, wxALL | wxEXPAND);
     column->Add(modebuttons, 0, wxALL | wxEXPAND);
 
+
     /* The canvas is where the turtles live and draw things. */
     canvas = new wxWindow(panel, wxID_ANY, wxDefaultPosition,
                           wxSize(501, 501));
-    topsizer->Add(canvas, 0, wxALL);
+
+
+    canvas->SetMaxSize(wxSize(501, 501));
+    canvas->SetMinSize(wxSize(501, 501));
+
+    topsizer->Add(canvas, 0, wxALL | wxFIXED_MINSIZE);
     /* Handler for painting the canvas.  Displays Background and then
        adds the turtles. */
     canvas->Bind(wxEVT_PAINT, &ContinuingLogoApp::OnPaintCanvas, this);
@@ -493,6 +514,14 @@ bool ContinuingLogoApp::OnInit()
         audioThread = NULL;
     }
 
+    /* Start the recording thread. */
+    recordingThread = new RecordingThread();
+    if(recordingThread->Run() != wxTHREAD_NO_ERROR) {
+        wxLogError("Can't create the recording thread!");
+        delete recordingThread;
+        recordingThread = NULL;
+    }
+
     /* Display the top level window and set the focus so the user can
        start typing commands. */
     frame->Show(true);
@@ -519,7 +548,7 @@ void ContinuingLogoApp::OnClose(wxCloseEvent& event) {
        The interpreter thread regularly calls TestDestroy to find out
        if we're waiting for it to quit. */
     if(interpreterThread->Delete() != 0) {
-        wxLogError("Can't delete the audio thread!");
+        wxLogError("Can't delete the interpreter thread!");
     }
     delete interpreterThread;
 
@@ -530,6 +559,14 @@ void ContinuingLogoApp::OnClose(wxCloseEvent& event) {
         wxLogError("Can't delete the audio thread!");
     }
     delete audioThread;
+
+    /* Ask the recording thread to end itself and then wait for it.
+       The recording thread regularly calls TestDestroy to find out
+       if we're waiting for it to quit. */
+    if(recordingThread->Delete() != 0) {
+        wxLogError("Can't delete the recording thread!");
+    }
+    delete recordingThread;
 
     frame->Destroy();
 }
@@ -1412,9 +1449,224 @@ void ContinuingLogoApp::OnXyColorunder(DrawEvent& event) {
     numberQueue.Post(im.GetRed(bgx, bgy));
 }
 
+/* Attempt to move until stopped by a condition. */
+void ContinuingLogoApp::OnMoveUntil(DrawEvent& event) {
+	Turtle &t = TurtleMap[event.turtle];
+    double angle = event.angle;
+    double distance = event.distance;
+    double stepsize = event.stepsize;
+    PixelCriteriaVector &criteria = event.criteria;
+    IntVector &turtles = event.turtles;
+
+    wxRect2DDouble screenbox(0, 0, 501, 501);
+    wxRect2DDouble turtlebox;
+
+    int steps = trunc(distance/stepsize);
+    double leftover = distance-steps*stepsize;
+
+    if(distance < 0) {
+        stepsize = -stepsize;
+        distance = -distance;
+        steps = -steps;
+    }
+
+
+    int ret = 0;
+
+    
+    for(int i = 0; i < steps; i++) {
+        t.right(angle);
+        t.forward(stepsize);
+        t.right(-angle);
+        turtlebox = t.boundingbox();
+
+        for(unsigned int c = 0; c < criteria.size(); c++) {
+            if(criteria[c].type == PAST_TOP) {
+                if(turtlebox.GetTop() < screenbox.GetTop()) {
+                    t.right(angle);
+                    t.forward(-stepsize);
+                    t.right(-angle);
+                    ret = c + 1;
+                    goto end;
+                } else {
+                    continue;
+                }
+            }
+
+            if(criteria[c].type == PAST_BOTTOM) {
+                if(turtlebox.GetBottom() > screenbox.GetBottom()) {
+                    t.right(angle);
+                    t.forward(-stepsize);
+                    t.right(-angle);
+                    ret = c + 1;
+                    goto end;
+                } else {
+                    continue;
+                }
+            }
+
+            if(criteria[c].type == PAST_LEFT) {
+                if(turtlebox.GetLeft() < screenbox.GetLeft()) {
+                    t.right(angle);
+                    t.forward(-stepsize);
+                    t.right(-angle);
+                    ret = c + 1;
+                    goto end;
+                } else {
+                    continue;
+                }
+            }
+
+            if(criteria[c].type == PAST_RIGHT) {
+                if(turtlebox.GetRight() > screenbox.GetRight()) {
+                    t.right(angle);
+                    t.forward(-stepsize);
+                    t.right(-angle);
+                    ret = c + 1;
+                    goto end;
+                } else {
+                    continue;
+                }
+            }
+
+            if(TurtleMap[event.turtle].over(PixelCriteria(NONTRANSPARENT),
+                                            criteria[c])) {
+                t.right(angle);
+                t.forward(-stepsize);
+                t.right(-angle);
+                ret = c + 1;
+                goto end;
+            }
+        }
+
+        for(unsigned int c = 0; c < turtles.size(); c++) {
+            if(TurtleMap[event.turtle].touching(
+                PixelCriteria(NONTRANSPARENT),
+                PixelCriteria(NONTRANSPARENT),
+                TurtleMap[turtles[c]])) {
+                t.right(angle);
+                t.forward(-stepsize);
+                t.right(-angle);
+                ret = c + criteria.size() + 1;
+                goto end;
+            }
+        }
+    }
+
+    t.right(angle);
+    t.forward(leftover);
+    t.right(-angle);
+    turtlebox = t.boundingbox();
+
+    for(unsigned int c = 0; c < criteria.size(); c++) {
+        if(criteria[c].type == PAST_TOP) {
+            if(turtlebox.GetTop() < screenbox.GetTop()) {
+                t.right(angle);
+                t.forward(-leftover);
+                t.right(-angle);
+                ret = c + 1;
+                goto end;
+            } else {
+                continue;
+            }
+        }
+
+        if(criteria[c].type == PAST_BOTTOM) {
+            if(turtlebox.GetBottom() > screenbox.GetBottom()) {
+                t.right(angle);
+                t.forward(-leftover);
+                t.right(-angle);
+                ret = c + 1;
+                goto end;
+            } else {
+                continue;
+            }
+        }
+
+        if(criteria[c].type == PAST_LEFT) {
+            if(turtlebox.GetLeft() < screenbox.GetLeft()) {
+                t.right(angle);
+                t.forward(-leftover);
+                t.right(-angle);
+                ret = c + 1;
+                goto end;
+            } else {
+                continue;
+            }
+        }
+
+        if(criteria[c].type == PAST_RIGHT) {
+            if(turtlebox.GetRight() > screenbox.GetRight()) {
+                t.right(angle);
+                t.forward(-leftover);
+                t.right(-angle);
+                ret = c + 1;
+                goto end;
+            } else {
+                continue;
+            }
+        }
+
+        if(TurtleMap[event.turtle].over(PixelCriteria(NONTRANSPARENT),
+                                        criteria[c])) {
+            t.right(angle);
+            t.forward(-leftover);
+            t.right(-angle);
+            ret = c+1;
+            goto end;
+        }
+    }
+
+    for(unsigned int c = 0; c < turtles.size(); c++) {
+        if(TurtleMap[event.turtle].touching(
+            PixelCriteria(NONTRANSPARENT),
+            PixelCriteria(NONTRANSPARENT),
+            TurtleMap[turtles[c]])) {
+            t.right(angle);
+            t.forward(-leftover);
+            t.right(-angle);
+            ret = c + criteria.size() + 1;
+            goto end;
+        }
+    }
+
+    end:
+    if(autorefresh)
+        canvas->Refresh(false);
+    numberQueue.Post(ret);
+}
+
 void ContinuingLogoApp::OnOver(CollisionTestEvent& event) {
     numberQueue.Post(TurtleMap[event.turtle].over(event.criteria1,
                                                   event.criteria2));
+}
+
+void ContinuingLogoApp::OnPasttop(CollisionTestEvent& event) {
+    if(TurtleMap[event.turtle].boundingbox().GetTop() < 0)
+        numberQueue.Post(1);
+    else
+        numberQueue.Post(0);
+}
+
+void ContinuingLogoApp::OnPastbottom(CollisionTestEvent& event) {
+    if(TurtleMap[event.turtle].boundingbox().GetBottom() > 501)
+        numberQueue.Post(1);
+    else
+        numberQueue.Post(0);
+}
+
+void ContinuingLogoApp::OnPastleft(CollisionTestEvent& event) {
+    if(TurtleMap[event.turtle].boundingbox().GetLeft() < 0)
+        numberQueue.Post(1);
+    else
+        numberQueue.Post(0);
+}
+
+void ContinuingLogoApp::OnPastright(CollisionTestEvent& event) {
+    if(TurtleMap[event.turtle].boundingbox().GetRight() > 501)
+        numberQueue.Post(1);
+    else
+        numberQueue.Post(0);
 }
 
 void ContinuingLogoApp::OnXyOver(CollisionTestEvent& event) {
@@ -1526,4 +1778,64 @@ wxThread::ExitCode InterpreterThread::Entry() {
     return (wxThread::ExitCode)0;
 }
 
+
+bool ContinuingLogoAppConsole::OnInit()
+{
+    /* Sent by BYE to tell the GUI to terminate. */
+    Bind(wxEVT_CLOSE_WINDOW, &ContinuingLogoAppConsole::OnClose, this);
+
+    /* Start the interpreter thread. */
+    interpreterThread = new InterpreterThread();
+    if(interpreterThread->Run() != wxTHREAD_NO_ERROR) {
+        wxLogError("Can't create the interpreter thread!");
+        delete interpreterThread;
+        interpreterThread = NULL;
+    }
+
+    /* Start the audio thread. */
+    audioThread = new AudioThread();
+    if(audioThread->Run() != wxTHREAD_NO_ERROR) {
+        wxLogError("Can't create the audio thread!");
+        delete audioThread;
+        audioThread = NULL;
+    }
+
+    /* Start the recording thread. */
+    recordingThread = new RecordingThread();
+    if(recordingThread->Run() != wxTHREAD_NO_ERROR) {
+        wxLogError("Can't create the recording thread!");
+        delete recordingThread;
+        recordingThread = NULL;
+    }
+
+    return true;
+}
+
+void ContinuingLogoAppConsole::OnClose(wxCloseEvent& event) {
+    /* Ask the interpreter thread to end itself and then wait for it.
+       The interpreter thread regularly calls TestDestroy to find out
+       if we're waiting for it to quit. */
+    if(interpreterThread->Delete() != 0) {
+        wxLogError("Can't delete the interpreter thread!");
+    }
+    delete interpreterThread;
+
+    /* Ask the audio thread to end itself and then wait for it.
+       The audio thread regularly calls TestDestroy to find out
+       if we're waiting for it to quit. */
+    if(audioThread->Delete() != 0) {
+        wxLogError("Can't delete the audio thread!");
+    }
+    delete audioThread;
+
+    /* Ask the recording thread to end itself and then wait for it.
+       The recording thread regularly calls TestDestroy to find out
+       if we're waiting for it to quit. */
+    if(recordingThread->Delete() != 0) {
+        wxLogError("Can't delete the recording thread!");
+    }
+    delete recordingThread;
+
+    ExitMainLoop();
+}
 

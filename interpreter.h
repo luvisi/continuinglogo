@@ -201,6 +201,10 @@ struct interpreter {
     struct sexpr *n_q8;
     struct sexpr *n_q9;
     struct sexpr *n_q10;
+    struct sexpr *n_pasttop;
+    struct sexpr *n_pastbottom;
+    struct sexpr *n_pastleft;
+    struct sexpr *n_pastright;
 };
 typedef struct interpreter IC; /* Interpreter Context */
 
@@ -290,7 +294,11 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(q7) \
     MACRO(q8) \
     MACRO(q9) \
-    MACRO(q10)
+    MACRO(q10) \
+    MACRO(pasttop) \
+    MACRO(pastbottom) \
+    MACRO(pastleft) \
+    MACRO(pastright)
 
 /* Macro to run a macro on all of the interpreter fields.
    used in interpreter.c to mark the root set during garbage
@@ -398,7 +406,11 @@ typedef struct interpreter IC; /* Interpreter Context */
     MACRO(n_q7) \
     MACRO(n_q8) \
     MACRO(n_q9) \
-    MACRO(n_q10)
+    MACRO(n_q10) \
+    MACRO(n_pasttop) \
+    MACRO(n_pastbottom) \
+    MACRO(n_pastleft) \
+    MACRO(n_pastright)
 
 
 /* Makes an interpreter.  gc_delay is how many allocations to perform
@@ -416,15 +428,6 @@ struct sexpr *eval(IC *ic, struct sexpr *expr, int top_allowed_results);
 /* Prints a stack trace.  Sometimes useful for debugging, but not very often.
    Lots of information gets thrown away by tail call optimization. */
 void print_stacktrace(IC *ic);
-
-/* Finds information about an operator. */
-int get_apply_parts(IC *ic,
-                    struct sexpr *e,
-                    struct sexpr **procp,
-                    struct sexpr **funargp,
-                    struct sexpr **macrop,
-                    struct sexpr **operp,
-                    int print_errors);
 
 /* Prints out an error message and longjmp's to an exit from eval() */
 #ifdef __GNUC__

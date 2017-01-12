@@ -94,5 +94,102 @@ protected:
 };
 
 
+/* This is for recording sound */
+
+class FrequencyRange {
+public:
+    FrequencyRange(double frequency, double variation) :
+        frequency(frequency), variation(variation) {}
+    double frequency;
+    double variation;
+};
+
+typedef wxVector<FrequencyRange> FrequencyRangeList;
+typedef wxVector<double> FrequencyPowerList;
+typedef wxMessageQueue<FrequencyPowerList> FrequencyPowerQueue;
+
+extern FrequencyPowerQueue FrequencyPowers;
+
+class RecordingCommand {
+public:
+    enum command { QUERY_DEVICES, START, QUERY_FREQUENCIES, STOP,
+                   START_DTMF, SILENCE_LOGGING };
+    RecordingCommand(enum command command) : command(command) {}
+    RecordingCommand(enum command command,
+                     int device,
+                     int sample_rate,
+                     int samples) :
+        command(command),
+        device(device),
+        sample_rate(sample_rate),
+        samples(samples) {}
+    RecordingCommand(enum command command,
+                     FrequencyRangeList frequency_ranges) :
+        command(command),
+        frequency_ranges(frequency_ranges) {}
+    RecordingCommand(enum command command,
+                     float dtmf_high_threshold,
+                     float dtmf_low_threshold) :
+        command(command),
+        dtmf_high_threshold(dtmf_high_threshold),
+        dtmf_low_threshold(dtmf_low_threshold) {}
+    RecordingCommand() {}
+
+    enum command command;
+    int device, sample_rate, samples;
+    float dtmf_high_threshold;
+    float dtmf_low_threshold;
+    FrequencyRangeList frequency_ranges;
+};
+
+class AudioDeviceInfo {
+public:
+    AudioDeviceInfo(const wxString &name,
+                    int max_inputs,
+                    int max_outputs,
+                    double default_sample_rate) :
+        name(name),
+        max_inputs(max_inputs),
+        max_outputs(max_outputs),
+        default_sample_rate(default_sample_rate) {}
+
+    wxString name;
+    int max_inputs, max_outputs;
+    double default_sample_rate;
+};
+
+typedef wxVector<AudioDeviceInfo> AudioDeviceList;
+
+typedef wxMessageQueue<RecordingCommand> RecordingCommandQueue;
+typedef wxMessageQueue<double> RecordingResponseQueue;
+typedef wxMessageQueue<AudioDeviceList> AudioDeviceListQueue;
+typedef wxMessageQueue<int> DTMFValueQueue;
+
+/* The interpreter thread sends RecordingCommand commands to the audio thread
+   in the RecordingCommands message queue. */
+extern RecordingCommandQueue RecordingCommands;
+
+/* The audio thread replies to TIMELEFT commands by sending its
+   answer back to the interpreter thread in the RecordingResponses
+   message queue. */
+extern RecordingResponseQueue RecordingResponses;
+
+extern AudioDeviceListQueue AudioDeviceLists;
+
+extern DTMFValueQueue DTMFValues;
+
+class RecordingThread : public wxThread
+{
+public:
+    RecordingThread() : wxThread(wxTHREAD_JOINABLE) { }
+protected:
+    virtual ExitCode Entry();
+};
+
+/* Used to lock all opens/closes/queries.
+   portaudio documentation says that reads/writes on different channels
+   should be safe most of the time without locking. 
+   I hope that it's correct. */
+extern wxMutex audioLocker;
 
 #endif

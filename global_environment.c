@@ -59,6 +59,7 @@
 #include "wxui.h"
 #include "turtles.h"
 #include "audio.h"
+#include "get_apply_parts.h"
 
 
 /* Increment a number by one. */
@@ -73,16 +74,25 @@ sexpr *dec(IC *ic, sexpr *s) {
 
 /* Non-recursive test for equality. */
 static sexpr *eq_helper(IC *ic, sexpr *first, sexpr *second) {
+    protect_ptr(ic->g, (void **)&first);
+    protect_ptr(ic->g, (void **)&second);
+
+    sexpr *ret = NULL;
+
     /* An object is always equal to itself. */
-    if(first == second)
-        return ic->n_true;
+    if(first == second) {
+        STORE(ic->g, NULL, ret, ic->n_true);
+        goto end;
+    }
 
     /* If we are ignoring case, then two names that refer to the same
        symbol (essentially, two names that only differ in case)
        are equal. */
     if(name_eq(ic->n_caseignoredp->u.name.symbol->value, ic->n_true) &&
-       name_eq(first, second))
-        return ic->n_true;
+       name_eq(first, second)) {
+        STORE(ic->g, NULL, ret, ic->n_true);
+        goto end;
+    }
       
     /* Only attempt a numeric comparison if both arguments could be
        converted to numbers. */
@@ -91,10 +101,18 @@ static sexpr *eq_helper(IC *ic, sexpr *first, sexpr *second) {
            is garbage collected while creating a NUMBER from second. */
         double first_value = to_number(ic, first)->u.number.value;
         double second_value = to_number(ic, second)->u.number.value;
-        if(first_value == second_value)
-            return ic->n_true;
+        if(first_value == second_value) {
+            STORE(ic->g, NULL, ret, ic->n_true);
+            goto end;
+        }
     }
-    return ic->n_false;
+
+    STORE(ic->g, NULL, ret, ic->n_false);
+
+    end:
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 sexpr *eq(IC *ic, sexpr *s) {
@@ -122,24 +140,23 @@ sexpr *quote(IC *ic, sexpr *s) {
    The full version of FUNCTION is in initialize.txt, and handles
    a broader range of arguments than this does. */
 sexpr *internal_function(IC *ic, sexpr *s) {
-    if(s->t == CONS) {
-        sexpr *oper = car(s);
-        return mk_funarg(ic, oper, ic->frame);
-    }
-    bad_argument(ic, car(s));
+    return mk_funarg(ic, car(s), ic->frame);
 }
 
 /* Logo Assignment. */
 sexpr *make(IC *ic, sexpr *s) {
-    sexpr *first = NULL, *second = NULL;
+    protect_ptr(ic->g, (void **) &s);
+
+    sexpr *first = to_name(ic, car(s));
     protect_ptr(ic->g, (void **) &first);
 
-    first = to_name(ic, car(s));
-    second = car(cdr(s));
+    sexpr *second = car(cdr(s));
+    protect_ptr(ic->g, (void **) &second);
 
     if(first->u.name.symbol->flags & VAL_TRACED) {
         sexpr *old_fullprint = ic->n_fullprintp->u.name.symbol->value;
         protect_ptr(ic->g, (void **) &old_fullprint);
+
         STORE(ic->g,
               ic->n_fullprintp->u.name.symbol,
               ic->n_fullprintp->u.name.symbol->value,
@@ -155,11 +172,15 @@ sexpr *make(IC *ic, sexpr *s) {
               ic->n_fullprintp->u.name.symbol,
               ic->n_fullprintp->u.name.symbol->value,
               old_fullprint);
+
         unprotect_ptr(ic->g);
     }
 
     STORE(ic->g, first->u.name.symbol,
                  first->u.name.symbol->value, second);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
@@ -226,6 +247,8 @@ sexpr *not_subr(IC *ic, sexpr *s) {
    Newline at the end.
  */
 sexpr *print_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     int printed_any = 0; /* State variable for printing a space before
                             every item but the first. */
     while(s->t == CONS) {
@@ -240,6 +263,8 @@ sexpr *print_subr(IC *ic, sexpr *s) {
             /* Do nothing */
         } else if(car(s)->t == CONS) {
             sexpr *l = car(s);
+            protect_ptr(ic->g, (void **)&l);
+
             int sub_printed_any = 0;
             while(l->t == CONS) {
                 if(sub_printed_any)
@@ -248,15 +273,18 @@ sexpr *print_subr(IC *ic, sexpr *s) {
                     sub_printed_any = 1;
 
                 lprint_sexpr(ic, car(l));
-                l = cdr(l);
+                STORE(ic->g, NULL, l, cdr(l));
             }
+            unprotect_ptr(ic->g);
         } else {
             lprint_sexpr(ic, car(s));
         }
-        s = cdr(s);
+        STORE(ic->g, NULL, s, cdr(s));
     }
 
     lprintf(ic, "\n");
+
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -267,6 +295,8 @@ sexpr *print_subr(IC *ic, sexpr *s) {
  */
    
 sexpr *show_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     int printed_any = 0; /* State variable for printing a space before
                             every item but the first. */
     while(s->t == CONS) {
@@ -275,10 +305,11 @@ sexpr *show_subr(IC *ic, sexpr *s) {
         else
             printed_any = 1;
         lprint_sexpr(ic, car(s));
-        s = cdr(s);
+        STORE(ic->g, NULL, s, cdr(s));
     }
 
     lprintf(ic, "\n");
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -289,11 +320,14 @@ sexpr *show_subr(IC *ic, sexpr *s) {
    No newline at the end.
  */
 sexpr *type_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     while(s->t == CONS) {
         /* Special handling for lists so that we do not print
            brackets around top level lists. */
         if(car(s)->t == CONS) {
             sexpr *l = car(s);
+            protect_ptr(ic->g, (void **)&l);
+
             int sub_printed_any = 0;  /* We don't separate arguments with
                                          spaces, but we do separate elements
                                          of a list we are passed. */
@@ -304,14 +338,16 @@ sexpr *type_subr(IC *ic, sexpr *s) {
                     sub_printed_any = 1;
 
                 lprint_sexpr(ic, car(l));
-                l = cdr(l);
+                STORE(ic->g, NULL, l, cdr(l));
             }
+            unprotect_ptr(ic->g);
         } else {
             lprint_sexpr(ic, car(s));
         }
-        s = cdr(s);
+        STORE(ic->g, NULL, s, cdr(s));
     }
 
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -390,9 +426,9 @@ sexpr *gensym_subr(IC *ic, sexpr *s) {
         name = ic->n_empty;
 
     if(name->t == NAME)
-        return new_name(ic, name->u.name.head,
-                            name->u.name.head+name->u.name.start,
-                            name->u.name.length);
+        return new_name_gc(ic, name->u.name.head,
+                               name->u.name.start,
+                               name->u.name.length);
     else
         bad_argument(ic, name);
 }
@@ -449,12 +485,15 @@ sexpr *namep(IC *ic, sexpr *s) {
 
 /* Add numbers. */
 sexpr *add(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     double ret = 0;
 
     while(!is_nil(ic, s)) {
         ret = ret + to_number(ic, car(s))->u.number.value;
-        s = cdr(s);
+        STORE(ic->g, NULL, s, cdr(s));
     }
+
+    unprotect_ptr(ic->g);
     return mk_number(ic, ret);
 }
 
@@ -464,6 +503,7 @@ sexpr *add(IC *ic, sexpr *s) {
    If given multiple arguments, returns the first minus the remaining
    arguments. */
 sexpr *sub(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     double ret = 0;
 
     if(!is_nil(ic, s)) {
@@ -471,62 +511,89 @@ sexpr *sub(IC *ic, sexpr *s) {
             ret = -to_number(ic, car(s))->u.number.value;
         } else {
             ret = to_number(ic, car(s))->u.number.value;
-            s = cdr(s);
+            STORE(ic->g, NULL, s, cdr(s));
             while(!is_nil(ic, s)) {
                 ret = ret - to_number(ic, car(s))->u.number.value;
-                s = cdr(s);
+                STORE(ic->g, NULL, s, cdr(s));
             }
         }
     }
 
+    unprotect_ptr(ic->g);
     return mk_number(ic, ret);
 }
 
 /* Multiply all of the arguments together. */
 sexpr *mul(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     double ret = 1;
     while(!is_nil(ic, s)) {
         ret = ret * to_number(ic, car(s))->u.number.value;
-        s = cdr(s);
+        STORE(ic->g, NULL, s, cdr(s));
     }
+    unprotect_ptr(ic->g);
     return mk_number(ic, ret);
 }
 
 /* Divide two numbers. */
 sexpr *div_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     double first = to_number(ic, car(s))->u.number.value;
     double second = to_number(ic, car(cdr(s)))->u.number.value;
+
+    unprotect_ptr(ic->g);
     return mk_number(ic, first/second);
 }
 
 /* Take the remainder of first/second.
    Result is the same sign as first. */
 sexpr *remainder_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     double first = to_number(ic, car(s))->u.number.value;
     double second = to_number(ic, car(cdr(s)))->u.number.value;
     double ret = fmod(first, second);
     if(first < 0 && ret > 0) ret -= abs(second);
     if(first > 0 && ret < 0) ret += abs(second);
+
+    unprotect_ptr(ic->g);
     return mk_number(ic, ret);
 }
 
 /* Take the remainder of first/second.
    Result is the same sign as second. */
 sexpr *modulo_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     double first = to_number(ic, car(s))->u.number.value;
     double second = to_number(ic, car(cdr(s)))->u.number.value;
     double ret = fmod(first, second);
     if(second < 0 && ret > 0) ret -= abs(second);
     if(second > 0 && ret < 0) ret += abs(second);
+
+    unprotect_ptr(ic->g);
     return mk_number(ic, ret);
+}
+
+static int compare(IC *ic, sexpr *first, sexpr *second) {
+    protect_ptr(ic->g, (void **)&first);
+    protect_ptr(ic->g, (void **)&second);
+
+    double dfirst = to_number(ic, first)->u.number.value;
+    double dsecond = to_number(ic, second)->u.number.value;
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    if(dfirst > dsecond) return 1;
+    if(dfirst < dsecond) return -1;
+    return 0;
 }
 
 /* greater than */
 sexpr *gt(IC *ic, sexpr *s) {
-    sexpr *first = car(s);
-    sexpr *second = car(cdr(s));
-    if(to_number(ic, first)->u.number.value >
-       to_number(ic, second)->u.number.value)
+    if(compare(ic, car(s), car(cdr(s))) > 0)
         return ic->n_true;
     else
         return ic->n_false;
@@ -535,10 +602,7 @@ sexpr *gt(IC *ic, sexpr *s) {
 
 /* less than */
 sexpr *lt(IC *ic, sexpr *s) {
-    sexpr *first = car(s);
-    sexpr *second = car(cdr(s));
-    if(to_number(ic, first)->u.number.value <
-       to_number(ic, second)->u.number.value)
+    if(compare(ic, car(s), car(cdr(s))) < 0)
         return ic->n_true;
     else
         return ic->n_false;
@@ -546,10 +610,7 @@ sexpr *lt(IC *ic, sexpr *s) {
 
 /* greater than or equal */
 sexpr *ge(IC *ic, sexpr *s) {
-    sexpr *first = car(s);
-    sexpr *second = car(cdr(s));
-    if(to_number(ic, first)->u.number.value >=
-       to_number(ic, second)->u.number.value)
+    if(compare(ic, car(s), car(cdr(s))) >= 0)
         return ic->n_true;
     else
         return ic->n_false;
@@ -557,10 +618,7 @@ sexpr *ge(IC *ic, sexpr *s) {
 
 /* less than or equal */
 sexpr *le(IC *ic, sexpr *s) {
-    sexpr *first = car(s);
-    sexpr *second = car(cdr(s));
-    if(to_number(ic, first)->u.number.value <=
-       to_number(ic, second)->u.number.value)
+    if(compare(ic, car(s), car(cdr(s))) <= 0)
         return ic->n_true;
     else
         return ic->n_false;
@@ -568,8 +626,7 @@ sexpr *le(IC *ic, sexpr *s) {
 
 /* not equal */
 sexpr *ne(IC *ic, sexpr *s) {
-    sexpr *are_equal = eq(ic, s);
-    if(name_eq(are_equal, ic->n_false))
+    if(compare(ic, car(s), car(cdr(s))) <= 0)
         return ic->n_true;
     else
         return ic->n_false;
@@ -625,23 +682,29 @@ sexpr *keyp_subr(IC *ic, sexpr *s) {
 
 /* Return a list of interned names. */
 sexpr *oblist(IC *ic, sexpr *s) {
-    sexpr *ret = ic->g_nil, *e;
-    sexpr *linking_object = NULL;
-    sexpr **nextp = &ret;
+    sexpr *ret = cons(ic, ic->g_nil, ic->g_nil);
+    protect_ptr(ic->g, (void **)&ret);
+
+    sexpr *tail = ret;
+    protect_ptr(ic->g, (void **)&tail);
+
     int i;
 
-    protect_ptr(ic->g, (void **)&ret);
-    for(i = 0; i < NAME_TABLE_HASH_BUCKETS; i++)
-        for(e = ic->name_table[i]; !is_nil(ic, e); e = cdr(e)) {
-            if(!is_nil(ic, car(e))) {
-                STORE(ic->g, linking_object, *nextp, cons(ic, car(e), ic->g_nil));
-                linking_object = *nextp;
-                nextp = &cdr(*nextp);
-            }
-        }
-    unprotect_ptr(ic->g);
+    for(i = 0; i < NAME_TABLE_HASH_BUCKETS; i++) {
+        sexpr *e = ic->name_table[i];
+        protect_ptr(ic->g, (void **)&e);
 
-    return ret;
+        while(!is_nil(ic, e)) {
+            if(!is_nil(ic, car(e)))
+                push_back(ic, &tail, car(e));
+            STORE(ic->g, NULL, e, cdr(e));
+        }
+        unprotect_ptr(ic->g);
+    }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return cdr(ret);
 }
 
 /* Manually run the garbage collector. */
@@ -655,23 +718,38 @@ sexpr *collect_garbage_subr(IC *ic, sexpr *s) {
    for use elsewhere in the interpreter.
  */
 sexpr *first(IC *ic, sexpr *e) {
+    protect_ptr(ic->g, (void **)&e);
+
+    sexpr *ret = NULL;
+    protect_ptr(ic->g, (void **)&ret);
+
     /* Return the first element of a list */
-    if(e->t == CONS)
-        return car(e);
+    if(e->t == CONS) {
+        STORE(ic->g, NULL, ret, car(e));
+        goto end;
+    }
 
     /* Return the origin, also known as the first element's index. */
-    if(e->t == ARRAY)
-        return mk_number(ic, e->u.array.origin);
+    if(e->t == ARRAY) {
+        STORE(ic->g, NULL, ret, mk_number(ic, e->u.array.origin));
+        goto end;
+    }
 
     /* Attempt to convert the argument to a name and return a name
        containing only the first letter of the argument. */
-    e = to_name(ic, e);
-    if(e->t == NAME) {
-        if(e->u.name.length >= 1) {
-            return intern_len(ic, e->u.name.head, e->u.name.head+e->u.name.start, 1);
-        }
+    STORE(ic->g, NULL, e, to_name(ic, e));
+    if(e->u.name.length >= 1) {
+        STORE(ic->g, NULL, ret, 
+              intern_len_gc(ic, e->u.name.head, e->u.name.start, 1));
+        goto end;
     }
+
     bad_argument(ic, e);
+
+    end:
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 /* The SUBR for FIRST. */
@@ -684,19 +762,34 @@ sexpr *first_subr(IC *ic, sexpr *s) {
    for use elsewhere in the interpreter.
  */
 sexpr *butfirst(IC *ic, sexpr *e) {
+    protect_ptr(ic->g, (void **)&e);
+
+    sexpr *ret = NULL;
+    protect_ptr(ic->g, (void **)&ret);
+
     /* cdr of a list */
-    if(e->t == CONS)
-        return cdr(e);
+    if(e->t == CONS) {
+        STORE(ic->g, NULL, ret, cdr(e));
+        goto end;
+    }
 
     /* For names, create a new name with everything but the first
        character. */
-    e = to_name(ic, e);
+    STORE(ic->g, NULL, e, to_name(ic, e));
     if(e->t == NAME) {
         if(e->u.name.length >= 1) {
-            return intern_len(ic, e->u.name.head, e->u.name.head+e->u.name.start+1, e->u.name.length-1);
+            STORE(ic->g, NULL, ret,
+                  intern_len_gc(ic, e->u.name.head, e->u.name.start+1, e->u.name.length-1));
+            goto end;
         }
     }
+
     bad_argument(ic, e);
+
+    end:
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 /* SUBR for BUTFIRST. */
@@ -706,78 +799,133 @@ sexpr *butfirst_subr(IC *ic, sexpr *s) {
 
 /* LAST - fetch the last member of a list or name. */
 sexpr *last(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *e = car(s);
+    protect_ptr(ic->g, (void **)&e);
+
+    sexpr *ret = NULL;
+    protect_ptr(ic->g, (void **)&ret);
+
     if(e->t == CONS) {
         while(e->t == CONS && !is_nil(ic, cdr(e)))
-            e = cdr(e);
-        if(e->t == CONS)
-            return car(e);
+            STORE(ic->g, NULL, e, cdr(e));
+        if(e->t == CONS) {
+            STORE(ic->g, NULL, ret, car(e));
+            goto end;
+        }
     }
-    e = to_name(ic, e);
-    if(e->u.name.length >= 1)
-        return intern_len(ic,
-                          e->u.name.head,
-                          e->u.name.head+e->u.name.start+e->u.name.length-1,
-                          1);
+    STORE(ic->g, NULL, e, to_name(ic, e));
+
+    if(e->u.name.length >= 1) {
+        STORE(ic->g, NULL, ret,
+              intern_len_gc(ic,
+                            e->u.name.head,
+                            e->u.name.start+e->u.name.length-1,
+                            1));
+        goto end;
+    }
     bad_argument(ic, car(s));
+
+    end:
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 /* BUTLAST - Return all but the last element of a list or a name. */
 sexpr *butlast(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *e = car(s);
+    protect_ptr(ic->g, (void **)&e);
+
+    sexpr *ret = NULL;
+    protect_ptr(ic->g, (void **)&ret);
+
     if(e->t == CONS) {
         /* It's a list.  Create a new list destructively so we can
            do it in a loop. */
-        sexpr *ret = ic->g_nil;
-        sexpr *linking_object = NULL;
-        sexpr **nextp = &ret;
-        protect_ptr(ic->g, (void **)&ret);
+        STORE(ic->g, NULL, ret, cons(ic, ic->g_nil, ic->g_nil));
+        sexpr *tail = ret;
+        protect_ptr(ic->g, (void **)&tail);
+
         while(e->t == CONS && !is_nil(ic, cdr(e))) {
-            STORE(ic->g, linking_object, *nextp, cons(ic, car(e), ic->g_nil));
-            linking_object = *nextp;
-            nextp = &cdr(*nextp);
-            e = cdr(e);
+            push_back(ic, &tail, car(e));
+            STORE(ic->g, NULL, e, cdr(e));
         }
+
         unprotect_ptr(ic->g);
-        if(is_nil(ic, cdr(e)))
-            return ret;
+
+        STORE(ic->g, NULL, ret, cdr(ret));
+        goto end;
     }
 
     /* Try to convert it to a name and create a new name not containing
        the last character. */
-    e = to_name(ic, e);
+    STORE(ic->g, NULL, e, to_name(ic, e));
     if(e->u.name.length >= 1) {
-        return intern_len(ic,
-                          e->u.name.head,
-                          e->u.name.head+e->u.name.start,
-                          e->u.name.length-1);
+        STORE(ic->g, NULL, ret, intern_len_gc(ic,
+                                e->u.name.head,
+                                e->u.name.start,
+                                e->u.name.length-1));
+        goto end;
     }
     bad_argument(ic, car(s));
+
+    end:
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 /* Merge zero or more words into one word. */
 sexpr *word(IC *ic, sexpr *e) {
-    char *new_word;
+    protect_ptr(ic->g, (void **)&e);
+
+    char *new_word = NULL;
+    protect_ptr(ic->g, (void **)&new_word);
+
+    sexpr *current = NULL;
+    protect_ptr(ic->g, (void **)&current);
+
+    sexpr *ret = NULL;
+    protect_ptr(ic->g, (void **)&ret);
+
     int i, len;
-    sexpr *current = e;
-    sexpr *ret;
 
     /* Calculate the full length the new name will need. */
-    for(current = e, len = 0; !is_nil(ic, current); current = cdr(current))
+    STORE(ic->g, NULL, current, e);
+    len = 0;
+    while(!is_nil(ic, current)) {
         len += to_name(ic, car(current))->u.name.length;
+        STORE(ic->g, NULL, current, cdr(current));
+    }
 
-    /* Create the char array for the new name and protect it during
-       the calls to to_name() which might allocate memory if passed
-       a number. */
-    new_word = (char *)ic_xmalloc(ic, len, mark_cstring);
-    protect_ptr(ic->g, (void **)&new_word);
-    for(current = e, i = 0; !is_nil(ic, current); current = cdr(current)) {
+    /* Create the char array for the new name */
+    STORE(ic->g, NULL, new_word, ic_xmalloc(ic, len, mark_cstring));
+
+    STORE(ic->g, NULL, current, e);
+    i = 0;
+    while(!is_nil(ic, current)) {
         sexpr *tmp = to_name(ic, car(current));
+        protect_ptr(ic->g, (void **)&tmp);
+
         strncpy(new_word+i, tmp->u.name.head+tmp->u.name.start, 
                             tmp->u.name.length);
         i += tmp->u.name.length;
+        
+        unprotect_ptr(ic->g);
+
+        STORE(ic->g, NULL, current, cdr(current));
     }
-    ret = intern_len(ic, new_word, new_word, len);
+    STORE(ic->g, NULL, ret, intern_len_gc(ic, new_word, 0, len));
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     return ret;
 }
@@ -795,37 +943,33 @@ sexpr *emptyp(IC *ic, sexpr *s) {
 /* Merge multiple things into one sentence.
    Sentences in the arguments get flattened. */
 sexpr *sentence(IC *ic, sexpr *s) {
-    sexpr *ret = ic->g_nil;
-    sexpr *linking_object = NULL;
-    sexpr **nextp = &ret;
+    protect_ptr(ic->g, (void **)&s);
+
+    sexpr *ret = cons(ic, ic->g_nil, ic->g_nil);
     protect_ptr(ic->g, (void **)&ret);
+
+    sexpr *tail = ret;
+    protect_ptr(ic->g, (void **)&tail);
 
     while(!is_nil(ic, s)) {
         if(car(s)->t == CONS) {
-            if(is_nil(ic, cdr(s))) {
-                /* We don't update nextp in this case because
-                   we are dealing with the last argument and will
-                   not be adding any more. */
-                STORE(ic->g, linking_object, *nextp, car(s));
-            } else {
-                sexpr *e = car(s);
-                while(e->t == CONS) {
-                    STORE(ic->g, linking_object, *nextp, cons(ic, car(e), ic->g_nil));
-                    linking_object = *nextp;
-                    nextp = &cdr(*nextp);
-                    e = cdr(e);
-                }
+            sexpr *e = car(s);
+            protect_ptr(ic->g, (void **)&e);
+            while(e->t == CONS) {
+                push_back(ic, &tail, car(e));
+                STORE(ic->g, NULL, e, cdr(e));
             }
+            unprotect_ptr(ic->g);
         } else if(!is_nil(ic, car(s))) {
-            STORE(ic->g, linking_object, *nextp, cons(ic, car(s), ic->g_nil));
-            linking_object = *nextp;
-            nextp = &cdr(*nextp);
+            push_back(ic, &tail, car(s));
         }
-        s = cdr(s);
+        STORE(ic->g, NULL, s, cdr(s));
     }
 
     unprotect_ptr(ic->g);
-    return ret;
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return cdr(ret);
 }
 
 /* FPUT - the Logo version of cons.
@@ -870,8 +1014,11 @@ sexpr *random_subr(IC *ic, sexpr *s) {
         else
             return mk_number(ic, 0);
     } else {
+        protect_ptr(ic->g, (void **)&s);
         int num1 = (int)trunc(to_number(ic, car(s))->u.number.value);
         int num2 = (int)trunc(to_number(ic, car(cdr(s)))->u.number.value);
+        unprotect_ptr(ic->g);
+
         int range;
         if(num1 > num2)
             return mk_number(ic, 0);
@@ -898,26 +1045,38 @@ sexpr *rerandom_subr(IC *ic, sexpr *s) {
 /* Extend the current frame, if necessary, to ensure that the name
    or names passed are local variables in the current frame. */
 sexpr *local(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     /* For handling the one argument version where the argument is
        a list of names. */
     if(s->t == CONS && (car(s)->t == CONS || car(s)->t == EMPTY_LIST))
-        s = car(s);
+        STORE(ic->g, NULL, s, car(s));
 
     while(s->t == CONS) {
-        add_local(ic, ic->continuation->frame, to_name(ic, car(s)));
-        s = cdr(s);
+        sexpr *n = to_name(ic, car(s));
+        protect_ptr(ic->g, (void **)&n);
+        add_local(ic, ic->continuation->frame, n);
+        unprotect_ptr(ic->g);
+        STORE(ic->g, NULL, s, cdr(s));
     }
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 /* Fetch the value of the name passed. */
 sexpr *thing(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *name = to_name(ic, car(s));
+    protect_ptr(ic->g, (void **)&name);
+
     if(name->u.name.symbol->value == ic->g_unbound) {
         eprint_sexpr(ic, car(s));
         eprintf(ic, " has no value");
         throw_error(ic, ic->continuation->line);
     }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return name->u.name.symbol->value;
 }
 
@@ -982,7 +1141,7 @@ sexpr *set_current_line(IC *ic, sexpr *s) {
  */
 sexpr *char_subr(IC *ic, sexpr *s) {
     char ch = trunc(to_number(ic, car(s))->u.number.value);
-    return intern_len(ic, NULL, &ch, 1);
+    return intern_len_static(ic, &ch, 0, 1);
 }
 
 /* File management.  Mostly wrappers around routines in io.c */
@@ -1093,13 +1252,16 @@ sexpr *filep_subr(IC *ic, sexpr *s) {
 /* Property list procedures.  Mostly wrappers around the procedures in
    list_memory.c */
 sexpr *pprop_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *var = NULL, *tag = NULL, *value = NULL;
     protect_ptr(ic->g, (void **) &var);
     protect_ptr(ic->g, (void **) &tag);
+    protect_ptr(ic->g, (void **) &value);
 
     STORE(ic->g, NULL, var, to_name(ic, car(s)));
     STORE(ic->g, NULL, tag, to_name(ic, car(cdr(s))));
-    value = car(cdr(cdr(s)));
+    STORE(ic->g, NULL, value, car(cdr(cdr(s))));
 
     if(var->t == NAME &&
        var->u.name.symbol->flags & PLIST_TRACED) {
@@ -1135,10 +1297,13 @@ sexpr *pprop_subr(IC *ic, sexpr *s) {
 
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *gprop_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *var = NULL, *tag = NULL, *ret = NULL;
     protect_ptr(ic->g, (void **) &var);
     protect_ptr(ic->g, (void **) &tag);
@@ -1149,10 +1314,12 @@ sexpr *gprop_subr(IC *ic, sexpr *s) {
     ret = gprop(ic, var, tag);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 sexpr *remprop_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *var = NULL, *tag = NULL;
     protect_ptr(ic->g, (void **) &var);
     protect_ptr(ic->g, (void **) &tag);
@@ -1164,14 +1331,17 @@ sexpr *remprop_subr(IC *ic, sexpr *s) {
 
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *plist_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *var = NULL, *ret = NULL;
     protect_ptr(ic->g, (void **) &var);
     STORE(ic->g, NULL, var, to_name(ic, car(s)));
     ret = plist(ic, var);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     return ret;
 }
@@ -1191,9 +1361,13 @@ sexpr *error_subr(IC *ic, sexpr *s) {
 /* Low level interface for throwing an error.  Used by
    THROW "ERROR ... in initialize.txt */
 sexpr *raise_error_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     if(s->t == CONS)
         eprint_sexpr(ic, car(s));
     throw_error(ic, ic->continuation->line);
+
+    /* Not reached */
+    unprotect_ptr(ic->g);
 }
 
 /* Creates a MACRO object.
@@ -1213,7 +1387,8 @@ sexpr *macro_subr(IC *ic, sexpr *s) {
 
 /* Parse a word as if read by READLIST. */
 sexpr *parse_subr(IC *ic, sexpr *s) {
-    sexpr *ret;
+    protect_ptr(ic->g, (void **)&s);
+
     logoreader *lr = mk_logoreader(ic);
     protect_ptr(ic->g, (void **) &lr);
 
@@ -1222,10 +1397,12 @@ sexpr *parse_subr(IC *ic, sexpr *s) {
 
     char *wordstring = get_cstring(ic, name);
     protect_ptr(ic->g, (void **) &wordstring);
+
     logoread_from_string(lr, wordstring);
 
-    ret = readlist(lr);
+    sexpr *ret = readlist(lr);
 
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
@@ -1255,7 +1432,7 @@ static void flaglist_helper(IC *ic, sexpr *l, int mask, int flag,
                             sexpr *orig_arg) {
     while(!is_nil(ic, l) && l->t == CONS && car(l)->t == NAME) {
         flag_helper(ic, car(l), mask, flag, orig_arg);
-        l = cdr(l);
+        l = cdr(l); /* Note STORE() since l is not protected. */
     }
     if(!is_nil(ic, l))
         bad_argument(ic, orig_arg);
@@ -1282,8 +1459,11 @@ static void contentslist_helper(
                 int varflag,
                 int plmask,
                 int plflag) {
+    protect_ptr(ic->g, (void **)&args);
     sexpr *arg = car(args);
+    protect_ptr(ic->g, (void **)&arg);
     sexpr *orig_arg = arg; /* In case we need to throw an error */
+    protect_ptr(ic->g, (void **)&orig_arg);
 
     if(arg->t == NAME) {
         flaglist_helper(ic, args, procmask, procflag, orig_arg);
@@ -1293,21 +1473,24 @@ static void contentslist_helper(
         if(arg->t == CONS) {
             if(car(arg)->t == CONS)
                 flaglist_helper(ic, car(arg), procmask, procflag, orig_arg);
-            arg = cdr(arg);
+            STORE(ic->g, NULL, arg, cdr(arg));
         }
         if(arg->t == CONS) {
             if(car(arg)->t == CONS)
                 flaglist_helper(ic, car(arg), varmask, varflag, orig_arg);
-            arg = cdr(arg);
+            STORE(ic->g, NULL, arg, cdr(arg));
         }
         if(arg->t == CONS) {
             if(car(arg)->t == CONS)
                 flaglist_helper(ic, car(arg), plmask, plflag, orig_arg);
-            arg = cdr(arg);
+            STORE(ic->g, NULL, arg, cdr(arg));
         }
         if(!is_nil(ic, arg))
             bad_argument(ic, orig_arg);
     }
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 /* Tests one flag in one name */
@@ -1515,12 +1698,22 @@ sexpr *bye_subr(IC *ic, sexpr *s) {
 
 /* Fetch an environmental variable. */
 sexpr *getenv_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     char *cstring = get_cstring(ic, to_name(ic, car(s)));
-    char *value = getenv(cstring);
+    protect_ptr(ic->g, (void **)&cstring);
+    char *value = getenv(cstring); /* Static, not protected */
+
+    sexpr *ret;
+
     if(value == NULL)
-        return ic->g_nil;
+        ret = ic->g_nil;
     else
-        return intern(ic, value);
+        ret = intern(ic, value);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return ret;
 }
 
 /* How many garbage collector nodes are allocated? */
@@ -1554,9 +1747,21 @@ sexpr *frame_depth_subr(IC *ic, sexpr *s) {
 
 /* What is the minimum, default, and maximum arity of the argument? */
 sexpr *arity_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *arg = car(s);
-    sexpr *proc, *funarg, *macro, *oper;
-    sexpr *min = NULL, *def = NULL, *max = NULL, *ret = NULL;
+    protect_ptr(ic->g, (void **)&arg);
+
+    sexpr *proc = NULL, *funarg = NULL, *macro = NULL, *oper = NULL;
+    sexpr *min = NULL, *def = NULL, *max = NULL;
+
+    protect_ptr(ic->g, (void **)&proc);
+    protect_ptr(ic->g, (void **)&funarg);
+    protect_ptr(ic->g, (void **)&macro);
+    protect_ptr(ic->g, (void **)&oper);
+    protect_ptr(ic->g, (void **)&min);
+    protect_ptr(ic->g, (void **)&def);
+    protect_ptr(ic->g, (void **)&max);
 
     if(!get_apply_parts(ic, arg, &proc, &funarg, &macro, &oper, 1))
         bad_argument(ic, arg);
@@ -1564,20 +1769,22 @@ sexpr *arity_subr(IC *ic, sexpr *s) {
     if(is_nil(ic, proc))
         bad_argument(ic, arg);
 
-    min = mk_number(ic, proc->u.proc.minargs);
-    protect_ptr(ic->g, (void **) &min);
-    def = mk_number(ic, proc->u.proc.defargs);
-    protect_ptr(ic->g, (void **) &def);
+    STORE(ic->g, NULL, min, mk_number(ic, proc->u.proc.minargs));
+    STORE(ic->g, NULL, def, mk_number(ic, proc->u.proc.defargs));
 
     if(proc->u.proc.maxargs == INT_MAX)
-        max = mk_number(ic, -1);
+        STORE(ic->g, NULL, max, mk_number(ic, -1));
     else
-        max = mk_number(ic, proc->u.proc.maxargs);
-    protect_ptr(ic->g, (void **) &max);
+        STORE(ic->g, NULL, max, mk_number(ic, proc->u.proc.maxargs));
 
-    ret = cons(ic, min,
-                   cons(ic, def,
-                            cons(ic, max, ic->g_nil)));
+    sexpr *ret = listl(ic, min, def, max, NULL);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
@@ -1586,15 +1793,34 @@ sexpr *arity_subr(IC *ic, sexpr *s) {
 
 /* Is the argument the name of a procedure of any kind? */
 sexpr *procedurep_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *arg = car(s);
-    sexpr *proc, *funarg, *macro, *oper;
+    protect_ptr(ic->g, (void **)&arg);
+
+    sexpr *proc = NULL, *funarg = NULL, *macro = NULL, *oper = NULL;
+    protect_ptr(ic->g, (void **)&proc);
+    protect_ptr(ic->g, (void **)&funarg);
+    protect_ptr(ic->g, (void **)&macro);
+    protect_ptr(ic->g, (void **)&oper);
+
+    sexpr *ret = NULL;
 
     if(arg->t != NAME ||
        !get_apply_parts(ic, arg, &proc, &funarg, &macro, &oper, 0) ||
        is_nil(ic, oper))
-        return ic->n_false;
+        ret = ic->n_false;
+    else
+        ret = ic->n_true;
 
-    return ic->n_true;
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return ret;
 }
 
 /* Is the argument the name of a primitive?
@@ -1602,55 +1828,119 @@ sexpr *procedurep_subr(IC *ic, sexpr *s) {
    considered primitives because you can't get their TEXT in
    Logo. */
 sexpr *primitivep_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *arg = car(s);
-    sexpr *proc, *funarg, *macro, *oper;
+    protect_ptr(ic->g, (void **)&arg);
+    sexpr *proc = NULL, *funarg = NULL, *macro = NULL, *oper = NULL;
+    protect_ptr(ic->g, (void **)&proc);
+    protect_ptr(ic->g, (void **)&funarg);
+    protect_ptr(ic->g, (void **)&macro);
+    protect_ptr(ic->g, (void **)&oper);
+
+    sexpr *ret = NULL;
 
     if(arg->t != NAME ||
        !get_apply_parts(ic, arg, &proc, &funarg, &macro, &oper, 0) ||
        is_nil(ic, oper) ||
        !is_nil(ic, arg->u.name.symbol->function_source))
-        return ic->n_false;
+        ret = ic->n_false;
+    else
+        ret = ic->n_true;
 
-    return ic->n_true;
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return ret;
 }
 
 /* Is the argument the name of a procedure that was defined in Logo? */
 sexpr *definedp_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *arg = car(s);
-    sexpr *proc, *funarg, *macro, *oper;
+    protect_ptr(ic->g, (void **)&arg);
+    sexpr *proc = NULL, *funarg = NULL, *macro = NULL, *oper = NULL;
+    protect_ptr(ic->g, (void **)&proc);
+    protect_ptr(ic->g, (void **)&funarg);
+    protect_ptr(ic->g, (void **)&macro);
+    protect_ptr(ic->g, (void **)&oper);
+
+    sexpr *ret = NULL;
 
     if(arg->t != NAME ||
        !get_apply_parts(ic, arg, &proc, &funarg, &macro, &oper, 0) ||
        is_nil(ic, oper) ||
        is_nil(ic, arg->u.name.symbol->function_source))
-        return ic->n_false;
+        ret = ic->n_false;
+    else
+        ret = ic->n_true;
 
-    return ic->n_true;
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return ret;
 }
 
 /* Is the argument the name of a macro? */
 sexpr *macrop_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *arg = car(s);
-    sexpr *proc, *funarg, *macro, *oper;
+    protect_ptr(ic->g, (void **)&arg);
+    sexpr *proc = NULL, *funarg = NULL, *macro = NULL, *oper = NULL;
+    protect_ptr(ic->g, (void **)&proc);
+    protect_ptr(ic->g, (void **)&funarg);
+    protect_ptr(ic->g, (void **)&macro);
+    protect_ptr(ic->g, (void **)&oper);
+
+    sexpr *ret = NULL;
 
     if(arg->t != NAME ||
        !get_apply_parts(ic, arg, &proc, &funarg, &macro, &oper, 0) ||
        is_nil(ic, macro) ||
        is_nil(ic, arg->u.name.symbol->function_source))
-        return ic->n_false;
+        ret = ic->n_false;
+    else
+        ret = ic->n_true;
 
-    return ic->n_true;
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return ret;
 }
 
 /* COPYDEF "FOO "BAR
    Makes FOO's behavior as a procedure be a copy of BAR's
    behavior as a procedure. */
 sexpr *copydef_subr(IC *ic, sexpr *s) {
-    sexpr *new_s = car(s);
-    sexpr *old = car(cdr(s));
+    protect_ptr(ic->g, (void **)&s);
 
-    sexpr *newproc, *newfunarg, *newmacro, *newoper;
-    sexpr *oldproc, *oldfunarg, *oldmacro, *oldoper;
+    sexpr *new_s = car(s);
+    protect_ptr(ic->g, (void **)&new_s);
+    sexpr *old = car(cdr(s));
+    protect_ptr(ic->g, (void **)&old);
+
+    sexpr *newproc = NULL, *newfunarg = NULL, *newmacro = NULL, *newoper = NULL;
+    sexpr *oldproc = NULL, *oldfunarg = NULL, *oldmacro = NULL, *oldoper = NULL;
+
+    protect_ptr(ic->g, (void **)&newproc);
+    protect_ptr(ic->g, (void **)&newfunarg);
+    protect_ptr(ic->g, (void **)&newmacro);
+    protect_ptr(ic->g, (void **)&newoper);
+    protect_ptr(ic->g, (void **)&oldproc);
+    protect_ptr(ic->g, (void **)&oldfunarg);
+    protect_ptr(ic->g, (void **)&oldmacro);
+    protect_ptr(ic->g, (void **)&oldoper);
 
     /* Fetch the default arity of the two procedures and compare them.
        If they are different, we need to reassign
@@ -1666,10 +1956,13 @@ sexpr *copydef_subr(IC *ic, sexpr *s) {
             int newdefargs = new_s->u.proc.defargs;
             int olddefargs = old->u.proc.defargs;
             if(newdefargs != olddefargs) {
+                sexpr *new_gen = cons(ic, ic->g_nil, ic->g_nil);
+                protect_ptr(ic->g, (void **)&new_gen);
                 STORE(ic->g,
                       ic->n_treeify_cache_generation->u.name.symbol,
                       ic->n_treeify_cache_generation->u.name.symbol->value,
-                      cons(ic, ic->g_nil, ic->g_nil));
+                      new_gen);
+                unprotect_ptr(ic->g);
             }
         }
         
@@ -1691,21 +1984,38 @@ sexpr *copydef_subr(IC *ic, sexpr *s) {
                  new_s->u.name.symbol->function_source,
                  old->u.name.symbol->function_source);
 
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 /* FORM - Create a formated version of a number. */
 sexpr *form_subr(IC *ic, sexpr *args) {
-    int len;
-    char *buf;
+    protect_ptr(ic->g, (void **)&args);
+
+    char *buf = NULL;
+    protect_ptr(ic->g, (void **)&buf);
+
+    int len = 0;
+
     double num = to_number(ic, car(args))->u.number.value;
     double width = to_number(ic, car(cdr(args)))->u.number.value;
     sexpr *precision = car(cdr(cdr(args)));
+    protect_ptr(ic->g, (void **)&precision);
 
     if(width >= 0) {
-        precision = to_number(ic, precision);
+        STORE(ic->g, NULL, precision, to_number(ic, precision));
     } else {
-        precision = to_name(ic, precision);
+        STORE(ic->g, NULL, precision, to_name(ic, precision));
     }
 
 
@@ -1734,7 +2044,13 @@ sexpr *form_subr(IC *ic, sexpr *args) {
         unprotect_ptr(ic->g);
     }
 
-    return intern_len(ic, buf, buf, len);
+    sexpr *ret = intern_len_gc(ic, buf, 0, len);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return ret;
 }
 
 /* WAIT N
@@ -1886,21 +2202,30 @@ sexpr *bitnot_subr(IC *ic, sexpr *s) {
 }
 
 sexpr *bitand_subr(IC *ic, sexpr *s) {
-    return mk_number(ic,
-                     ((int)trunc(to_number(ic, car(s))->u.number.value)) &
-                     ((int)trunc(to_number(ic, car(cdr(s)))->u.number.value)));
+    protect_ptr(ic->g, (void **)&s);
+    int n1 = (int)trunc(to_number(ic, car(s))->u.number.value);
+    int n2 = (int)trunc(to_number(ic, car(cdr(s)))->u.number.value);
+    unprotect_ptr(ic->g);
+
+    return mk_number(ic, n1 & n2);
 }
 
 sexpr *bitor_subr(IC *ic, sexpr *s) {
-    return mk_number(ic,
-                     ((int)trunc(to_number(ic, car(s))->u.number.value)) |
-                     ((int)trunc(to_number(ic, car(cdr(s)))->u.number.value)));
+    protect_ptr(ic->g, (void **)&s);
+    int n1 = (int)trunc(to_number(ic, car(s))->u.number.value);
+    int n2 = (int)trunc(to_number(ic, car(cdr(s)))->u.number.value);
+    unprotect_ptr(ic->g);
+
+    return mk_number(ic, n1 | n2);
 }
 
 sexpr *bitxor_subr(IC *ic, sexpr *s) {
-    return mk_number(ic,
-                     ((int)trunc(to_number(ic, car(s))->u.number.value)) ^
-                     ((int)trunc(to_number(ic, car(cdr(s)))->u.number.value)));
+    protect_ptr(ic->g, (void **)&s);
+    int n1 = (int)trunc(to_number(ic, car(s))->u.number.value);
+    int n2 = (int)trunc(to_number(ic, car(cdr(s)))->u.number.value);
+    unprotect_ptr(ic->g);
+
+    return mk_number(ic, n1 ^ n2);
 }
 
 /* Arithmetic shift
@@ -1908,8 +2233,10 @@ sexpr *bitxor_subr(IC *ic, sexpr *s) {
    Negative values represent a right shift.
  */
 sexpr *ashift_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int val = (int)trunc(to_number(ic, car(s))->u.number.value);
     int shift = (int)trunc(to_number(ic, car(cdr(s)))->u.number.value);
+    unprotect_ptr(ic->g);
 
     if(shift >= 0)
         val <<= shift;
@@ -1924,8 +2251,10 @@ sexpr *ashift_subr(IC *ic, sexpr *s) {
    Negative values represent a right shift.
  */
 sexpr *lshift_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int val = (int)trunc(to_number(ic, car(s))->u.number.value);
     int shift = (int)trunc(to_number(ic, car(cdr(s)))->u.number.value);
+    unprotect_ptr(ic->g);
 
     if(shift >= 0)
         val <<= shift;
@@ -1937,31 +2266,45 @@ sexpr *lshift_subr(IC *ic, sexpr *s) {
 
 /* POWER N M -> N^M */
 sexpr *power_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     double base = to_number(ic, car(s))->u.number.value;
     double exponent = to_number(ic, car(cdr(s)))->u.number.value;
+    unprotect_ptr(ic->g);
     return mk_number(ic, pow(base, exponent));
 }
 
 /* Dangerous mutators .SETFIRST and .SETBF */
 sexpr *dot_setfirst_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *l = car(s);
+    protect_ptr(ic->g, (void **)&l);
     sexpr *thing = car(cdr(s));
+    protect_ptr(ic->g, (void **)&thing);
 
     if(l->t != CONS)
         bad_argument(ic, l);
 
     STORE(ic->g, l, l->u.cons.car, thing);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *dot_setbf_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *l = car(s);
+    protect_ptr(ic->g, (void **)&l);
     sexpr *thing = car(cdr(s));
+    protect_ptr(ic->g, (void **)&thing);
 
     if(l->t != CONS)
         bad_argument(ic, l);
 
     STORE(ic->g, l, l->u.cons.cdr, thing);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -1969,34 +2312,38 @@ sexpr *dot_setbf_subr(IC *ic, sexpr *s) {
    ASCII "A -> 65
  */
 sexpr *ascii_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *arg = to_name(ic, car(s));
+    protect_ptr(ic->g, (void **)&arg);
 
     if(arg->u.name.length < 1)
         bad_argument(ic, arg);
 
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return mk_number(ic, arg->u.name.head[arg->u.name.start]);
 }
 
 /* Apply a mapping to every letter in a string.
    Used in uppercase_subr and lowercase_subr below. */
 static sexpr *mapstr(IC *ic, sexpr *s, int (*mapper)(int)) {
-    sexpr *arg = NULL;
-    int len;
-    char *buf = NULL;
+    protect_ptr(ic->g, (void **)&s);
     int i;
-    sexpr *ret = NULL;
 
-
-    arg = to_name(ic, car(s));
+    sexpr *arg = to_name(ic, car(s));
     protect_ptr(ic->g, (void **) &arg);
-    len = arg->u.name.length;
-    buf = (char *)ic_xmalloc(ic, len, mark_cstring);
+
+    int len = arg->u.name.length;
+
+    char *buf = (char *)ic_xmalloc(ic, len, mark_cstring);
     protect_ptr(ic->g, (void **) &buf);
 
     for(i = 0; i < len; i++)
         buf[i] = (*mapper)(arg->u.name.head[arg->u.name.start+i]);
 
-    ret = intern_len(ic, buf, buf, len);
+    sexpr *ret = intern_len_gc(ic, buf, 0, len);
+
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     return ret;
@@ -2015,26 +2362,38 @@ sexpr *lowercase_subr(IC *ic, sexpr *s) {
 /* Does the first string appear in the second one?
    Does not work on strings containing NULL bytes. */
 sexpr *substringp_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *needle = car(s);
+    protect_ptr(ic->g, (void **)&needle);
+
     sexpr *haystack = car(cdr(s));
-    char *ns = NULL, *hs = NULL, *cp = NULL;
+    protect_ptr(ic->g, (void **)&haystack);
 
     if((needle->t != NAME && needle->t != NUMBER) ||
        (haystack->t != NAME && haystack->t != NUMBER))
         return ic->n_false;
 
-    ns = get_cstring(ic, to_name(ic, needle));
+    char *ns = get_cstring(ic, to_name(ic, needle));
     protect_ptr(ic->g, (void **) &ns);
-    hs = get_cstring(ic, to_name(ic, haystack));
-    unprotect_ptr(ic->g);
+    char *hs = get_cstring(ic, to_name(ic, haystack));
+    protect_ptr(ic->g, (void **) &hs);
+
     if(name_eq(ic->n_caseignoredp->u.name.symbol->value, ic->n_true)) {
         /* If CASEIGNOREDP is set to "TRUE then we forcibly uppercase
            all characters in both strings before the search. */
+        char *cp;
         for(cp = ns; *cp; cp++)
             *cp = toupper(*cp);
         for(cp = hs; *cp; cp++)
             *cp = toupper(*cp);
     }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 
     if(strstr(hs, ns))
         return ic->n_true;
@@ -2047,14 +2406,23 @@ sexpr *substringp_subr(IC *ic, sexpr *s) {
       -> FALSE otherwise
  */
 sexpr *beforep_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *first = car(s);
+    protect_ptr(ic->g, (void **)&first);
     sexpr *second = car(cdr(s));
+    protect_ptr(ic->g, (void **)&second);
+
     char *fs, *ss;
     int comparison;
 
     fs = get_cstring(ic, to_name(ic, first));
     protect_ptr(ic->g, (void **) &fs);
     ss = get_cstring(ic, to_name(ic, second));
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     /* If CASEIGNOREDP is "TRUE, then we use strcasecmp to get a case
@@ -2073,6 +2441,8 @@ sexpr *beforep_subr(IC *ic, sexpr *s) {
 /* ARRAY N [ORIGIN] creates an array with N members, with the origin
    set to ORIGIN or (if omitted) 1. */
 sexpr *array_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     int length = (int)trunc(to_number(ic, car(s))->u.number.value);
     int origin;
 
@@ -2081,13 +2451,16 @@ sexpr *array_subr(IC *ic, sexpr *s) {
     else
         origin = (int)trunc(to_number(ic, car(cdr(s)))->u.number.value);
 
+    unprotect_ptr(ic->g);
     return array(ic, length, origin);
 }
 
 static void index_range_error(IC *ic, int index, sexpr *thing) {
+    protect_ptr(ic->g, (void **)&thing);
     eprintf(ic, "Range error - %d is out of range for ", index);
     eprint_sexpr(ic, thing);
     eprintf(ic, "\n");
+    unprotect_ptr(ic->g);
     throw_error(ic, ic->continuation->line);
 }
 
@@ -2095,10 +2468,15 @@ static void index_range_error(IC *ic, int index, sexpr *thing) {
    Set item N of ARRAY to I.
  */
 sexpr *setitem_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     int index = (int)trunc(to_number(ic, car(s))->u.number.value);
     unsigned int realindex;
+
     sexpr *array = car(cdr(s));
+    protect_ptr(ic->g, (void **)&array);
     sexpr *value = car(cdr(cdr(s)));
+    protect_ptr(ic->g, (void **)&value);
 
     if(array->t != ARRAY)
         bad_argument(ic, array);
@@ -2110,6 +2488,10 @@ sexpr *setitem_subr(IC *ic, sexpr *s) {
     STORE(ic->g, array->u.array.members,
                  array->u.array.members[realindex],
                  value);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2117,28 +2499,43 @@ sexpr *setitem_subr(IC *ic, sexpr *s) {
    THING can be an array, a list, or a name.
  */
 sexpr *item_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     int index = (int)trunc(to_number(ic, car(s))->u.number.value);
+
     sexpr *thing = car(cdr(s));
+    protect_ptr(ic->g, (void **)&thing);
+
+    sexpr *ret = NULL;
+    protect_ptr(ic->g, (void **)&ret);
 
     switch(thing->t) {
         case NAME:
             if(index < 1 || (unsigned int)index > thing->u.name.length)
                 index_range_error(ic, index, thing);
-            return intern_len(ic, thing->u.name.head,
-                                  thing->u.name.head+thing->u.name.start + index - 1,
-                                  1);
+            STORE(ic->g, NULL, ret,
+                  intern_len_gc(ic, thing->u.name.head,
+                                    thing->u.name.start + index - 1,
+                                    1));
+            goto end;
         case CONS:
             {
                 int i = index;
                 sexpr *e = thing;
+                protect_ptr(ic->g, (void **)&e);
+
                 if(i < 1) index_range_error(ic, i, thing);
+
                 while(i > 1) {
                     i--;
-                    e = cdr(e);
+                    STORE(ic->g, NULL, e, cdr(e));
                     if(is_nil(ic, e))
                         index_range_error(ic, index, thing);
                 }
-                return car(e);
+
+                STORE(ic->g, NULL, ret, car(e));
+                unprotect_ptr(ic->g);
+                goto end;
             }
                
         case ARRAY:
@@ -2146,11 +2543,18 @@ sexpr *item_subr(IC *ic, sexpr *s) {
                 unsigned int realindex = index - thing->u.array.origin;
                 if(realindex < 0 || realindex >= thing->u.array.length)
                     index_range_error(ic, index, thing);
-                return thing->u.array.members[realindex];
+                STORE(ic->g, NULL, ret, thing->u.array.members[realindex]);
+                goto end;
             }
         default:
             bad_argument(ic, thing);
     }
+
+    end:
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 /* COUNT THING
@@ -2160,6 +2564,7 @@ sexpr *item_subr(IC *ic, sexpr *s) {
  */
 sexpr *count_subr(IC *ic, sexpr *s) {
     sexpr *e = car(s);
+
     int i;
 
     if(e->t == EMPTY_LIST)
@@ -2241,7 +2646,9 @@ sexpr *question_subr(IC *ic, sexpr *s) {
 }
 
 sexpr *continuation_stacktrace(IC *ic, sexpr *s) {
+  protect_ptr(ic->g, (void **)&s);
   continuation *c = ic->continuation;
+  protect_ptr(ic->g, (void **)&c);
 
   for(;;) {
     tprintf(ic, "    ");
@@ -2249,21 +2656,29 @@ sexpr *continuation_stacktrace(IC *ic, sexpr *s) {
     tprintf(ic, "\n");
     if(c->parent == NULL)
       break;
-    c = c->parent;
+    STORE(ic->g, NULL, c, c->parent);
   }
+
+  unprotect_ptr(ic->g);
+  unprotect_ptr(ic->g);
   return ic->g_unbound;
 }
 
 sexpr *environment_stacktrace(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int i = 0;
     struct frame *f = ic->continuation->frame;
+    protect_ptr(ic->g, (void **)&f);
     while(f != NULL) {
         tprintf(ic, "   %5d ", i);
         tprint_sexpr(ic, f->procedure);
         tprintf(ic, "\n");
         i++;
-        f = f->parent;
+        STORE(ic->g, NULL, f, f->parent);
     }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2332,16 +2747,20 @@ void wxwaitfor_condition(IC *ic, wxEvent *event) {
 }
 
 int toint(IC *ic, sexpr *s) {
-    return (int)to_number(ic, s)->u.number.value;
+    return (int)trunc(to_number(ic, s)->u.number.value);
 }
 
 sexpr *wxedit_subr(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *first = car(s);
+    protect_ptr(ic->g, (void **)&first);
 
     if(first->t == NAME) {
         wxString wxs(get_cstring(ic, first));
         wxCommandEvent *editE = new wxCommandEvent(EDIT_STRING);
         editE->SetString(wxs);
+        unprotect_ptr(ic->g);
+        unprotect_ptr(ic->g);
         return intern(ic, wxwaitfor_string(ic, editE));
     }
 
@@ -2350,24 +2769,30 @@ sexpr *wxedit_subr(IC *ic, sexpr *s) {
 
     
 sexpr *tsetxy(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double x = to_number(ic, car(cdr(s)))->u.number.value;
     double y = to_number(ic, car(cdr(cdr(s))))->u.number.value;
     wxwaitfor_condition(ic, new DrawEvent(SETXY, turtle, x, y));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tsetx(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double x = to_number(ic, car(cdr(s)))->u.number.value;
     wxwaitfor_condition(ic, new DrawEvent(SETX, turtle, x));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tsety(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double y = to_number(ic, car(cdr(s)))->u.number.value;
     wxwaitfor_condition(ic, new DrawEvent(SETY, turtle, y));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2382,9 +2807,11 @@ sexpr *tycor(IC *ic, sexpr *s) {
 }
 
 sexpr *tsetrotation(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double rotation = to_number(ic, car(cdr(s)))->u.number.value;
     wxwaitfor_condition(ic, new DrawEvent(SETROTATION, turtle, rotation));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2394,16 +2821,20 @@ sexpr *trotation(IC *ic, sexpr *s) {
 }
 
 sexpr *trotate(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double degrees = to_number(ic, car(cdr(s)))->u.number.value;
     wxwaitfor_condition(ic, new DrawEvent(ROTATE, turtle, degrees));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tsetheading(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double heading = to_number(ic, car(cdr(s)))->u.number.value;
     wxwaitfor_condition(ic, new DrawEvent(SETHEADING, turtle, heading));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2417,12 +2848,22 @@ void right(IC *ic, int turtle, double degrees) {
 }
 
 sexpr *tright_subr(IC *ic, sexpr *s) {
-    right(ic, toint(ic, car(s)), to_number(ic, car(cdr(s)))->u.number.value);
+    protect_ptr(ic->g, (void **)&s);
+    int turtle = toint(ic, car(s));
+
+    right(ic, turtle, to_number(ic, car(cdr(s)))->u.number.value);
+
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tleft_subr(IC *ic, sexpr *s) {
-    right(ic, toint(ic, car(s)), -to_number(ic, car(cdr(s)))->u.number.value);
+    protect_ptr(ic->g, (void **)&s);
+    int turtle = toint(ic, car(s));
+
+    right(ic, turtle, -to_number(ic, car(cdr(s)))->u.number.value);
+
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2431,12 +2872,22 @@ void forward(IC *ic, int turtle, double dist) {
 }
 
 sexpr *tforward_subr(IC *ic, sexpr *s) {
-    forward(ic, toint(ic, car(s)), to_number(ic, car(cdr(s)))->u.number.value);
+    protect_ptr(ic->g, (void **)&s);
+    int turtle = toint(ic, car(s));
+
+    forward(ic, turtle, to_number(ic, car(cdr(s)))->u.number.value);
+
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tback_subr(IC *ic, sexpr *s) {
-    forward(ic, toint(ic, car(s)), -to_number(ic, car(cdr(s)))->u.number.value);
+    protect_ptr(ic->g, (void **)&s);
+    int turtle = toint(ic, car(s));
+
+    forward(ic, turtle, -to_number(ic, car(cdr(s)))->u.number.value);
+
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2451,25 +2902,35 @@ sexpr *clean(IC *ic, sexpr *s) {
 }
 
 sexpr *tarc(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double angle = to_number(ic, car(cdr(s)))->u.number.value;
     double radius = to_number(ic, car(cdr(cdr(s))))->u.number.value;
 
     wxwaitfor_condition(ic, new DrawEvent(DRAW_ARC, turtle, angle, radius));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *fetchturtles(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     sexpr *ret = ic->g_nil;
+    protect_ptr(ic->g, (void **)&ret);
+
     int i, count, turtle;
 
     count = (int) wxwaitfor_number(ic, new DrawEvent(FETCHTURTLES));
 
-    protect_ptr(ic->g, (void **) &ret);
     for(i = 0; i < count; i++) {
         turtle = (int) wxwaitfor_number_noevent(ic);
-        STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, turtle), ret));
+        sexpr *tnum = mk_number(ic, turtle);
+        protect_ptr(ic->g, (void **)&tnum);
+        STORE(ic->g, NULL, ret, cons(ic, tnum, ret));
+        unprotect_ptr(ic->g);
     }
+
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return ret;
@@ -2506,11 +2967,14 @@ sexpr *thideturtle(IC *ic, sexpr *s) {
 }
 
 sexpr *tbitmap(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
     int turtle = toint(ic, car(s));
     wxString path(get_cstring(ic, to_name(ic, car(cdr(s)))));
     double x = to_number(ic, car(cdr(cdr(s))))->u.number.value;
     double y = to_number(ic, car(cdr(cdr(cdr(s)))))->u.number.value;
 
+    unprotect_ptr(ic->g);
     if(wxwaitfor_number(ic, new DrawEvent(BITMAPTURTLE, turtle, path, x, y))) {
         return ic->n_true;
     } else {
@@ -2574,26 +3038,32 @@ sexpr *tpendownp(IC *ic, sexpr *s) {
 }
 
 sexpr *intsetbg(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     unsigned char red = toint(ic, car(s));
     unsigned char green = toint(ic, car(cdr(s)));
     unsigned char blue = toint(ic, car(cdr(cdr(s))));
     wxwaitfor_condition(ic, new DrawEvent(SETBG, red, green, blue));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tsetpencolor(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     unsigned char red = toint(ic, car(cdr(s)));
     unsigned char green = toint(ic, car(cdr(cdr(s))));
     unsigned char blue = toint(ic, car(cdr(cdr(cdr(s)))));
     wxwaitfor_condition(ic, new DrawEvent(SETPENCOLOR, turtle, red, green, blue));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tsetpensize(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     int size = toint(ic, car(cdr(s)));
     wxwaitfor_condition(ic, new DrawEvent(SETPENSIZE, turtle, size));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2603,6 +3073,7 @@ sexpr *tpensize(IC *ic, sexpr *s) {
 }
 
 sexpr *tcapturebitmap(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic,                                   car(s));
     int x1 = toint(ic,                                   car(cdr(s)));
     int y1 = toint(ic,                               car(cdr(cdr(s))));
@@ -2612,10 +3083,12 @@ sexpr *tcapturebitmap(IC *ic, sexpr *s) {
     int yoffset = toint(ic,          car(cdr(cdr(cdr(cdr(cdr(cdr(s))))))));
     sexpr *transparent =         car(cdr(cdr(cdr(cdr(cdr(cdr(cdr(s))))))));
     wxwaitfor_condition(ic, new DrawEvent(CAPTUREBITMAP, turtle, x1, y1, x2, y2, xoffset, yoffset, name_eq(transparent, ic->n_true)));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *captureshape(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int shape = toint(ic,                                   car(s));
     int x1    = toint(ic,                                   car(cdr(s)));
     int y1    = toint(ic,                               car(cdr(cdr(s))));
@@ -2625,13 +3098,16 @@ sexpr *captureshape(IC *ic, sexpr *s) {
     int yoffset = toint(ic,          car(cdr(cdr(cdr(cdr(cdr(cdr(s))))))));
     sexpr *transparent =         car(cdr(cdr(cdr(cdr(cdr(cdr(cdr(s))))))));
     wxwaitfor_condition(ic, new DrawEvent(CAPTURESHAPE, shape, x1, y1, x2, y2, xoffset, yoffset, name_eq(transparent, ic->n_true)));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tsetshape(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic,     car(s));
     int shape  = toint(ic, car(cdr(s)));
     wxwaitfor_condition(ic, new DrawEvent(SETSHAPE, turtle, shape));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2651,16 +3127,20 @@ sexpr *refresh(IC *ic, sexpr *s) {
 }
 
 sexpr *tsetxscale(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double scale = to_number(ic, car(cdr(s)))->u.number.value;
     wxwaitfor_condition(ic, new DrawEvent(SETXSCALE, turtle, scale));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tsetyscale(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     double scale = to_number(ic, car(cdr(s)))->u.number.value;
     wxwaitfor_condition(ic, new DrawEvent(SETYSCALE, turtle, scale));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2675,9 +3155,11 @@ sexpr *tyscale(IC *ic, sexpr *s) {
 }
 
 sexpr *saveturtle(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     wxString path(get_cstring(ic, to_name(ic, car(cdr(s)))));
     wxwaitfor_condition(ic, new DrawEvent(SAVE_TURTLE, turtle, path));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -2710,10 +3192,12 @@ sexpr *tpenerase(IC *ic, sexpr *s) {
 }
 
 sexpr *tover(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     unsigned char red = toint(ic, car(cdr(s)));
     unsigned char green = toint(ic, car(cdr(cdr(s))));
     unsigned char blue = toint(ic, car(cdr(cdr(cdr(s)))));
+    unprotect_ptr(ic->g);
     if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_OVER,
                                                    turtle,
                                                    PixelCriteria(NONTRANSPARENT),
@@ -2725,10 +3209,9 @@ sexpr *tover(IC *ic, sexpr *s) {
 
 sexpr *tpasttop(IC *ic, sexpr *s) {
     int turtle = toint(ic, car(s));
-    if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_OVER,
+    if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_PASTTOP,
                                                    turtle,
-                                                   PixelCriteria(NONTRANSPARENT),
-                                                   PixelCriteria(PAST_TOP))))
+                                                   PixelCriteria(NONTRANSPARENT))))
         return ic->n_true;
     else
         return ic->n_false;
@@ -2736,10 +3219,9 @@ sexpr *tpasttop(IC *ic, sexpr *s) {
 
 sexpr *tpastbottom(IC *ic, sexpr *s) {
     int turtle = toint(ic, car(s));
-    if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_OVER,
+    if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_PASTBOTTOM,
                                                    turtle,
-                                                   PixelCriteria(NONTRANSPARENT),
-                                                   PixelCriteria(PAST_BOTTOM))))
+                                                   PixelCriteria(NONTRANSPARENT))))
         return ic->n_true;
     else
         return ic->n_false;
@@ -2747,10 +3229,9 @@ sexpr *tpastbottom(IC *ic, sexpr *s) {
 
 sexpr *tpastleft(IC *ic, sexpr *s) {
     int turtle = toint(ic, car(s));
-    if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_OVER,
+    if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_PASTLEFT,
                                                    turtle,
-                                                   PixelCriteria(NONTRANSPARENT),
-                                                   PixelCriteria(PAST_LEFT))))
+                                                   PixelCriteria(NONTRANSPARENT))))
         return ic->n_true;
     else
         return ic->n_false;
@@ -2758,22 +3239,23 @@ sexpr *tpastleft(IC *ic, sexpr *s) {
 
 sexpr *tpastright(IC *ic, sexpr *s) {
     int turtle = toint(ic, car(s));
-    if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_OVER,
+    if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_PASTRIGHT,
                                                    turtle,
-                                                   PixelCriteria(NONTRANSPARENT),
-                                                   PixelCriteria(PAST_RIGHT))))
+                                                   PixelCriteria(NONTRANSPARENT))))
         return ic->n_true;
     else
         return ic->n_false;
 }
 
 sexpr *txyover(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic,                             car(s));
     int x = toint(ic,                              car(cdr(s)));
     int y = toint(ic,                          car(cdr(cdr(s))));
     unsigned char red =          toint(ic, car(cdr(cdr(cdr(s)))));
     unsigned char green =    toint(ic, car(cdr(cdr(cdr(cdr(s))))));
     unsigned char blue = toint(ic, car(cdr(cdr(cdr(cdr(cdr(s)))))));
+    unprotect_ptr(ic->g);
 
     if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLEXY_OVER,
                                                    turtle,
@@ -2785,9 +3267,81 @@ sexpr *txyover(IC *ic, sexpr *s) {
         return ic->n_false;
 }
 
+sexpr *tmoveuntil(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+    int turtle = toint(ic, car(s));
+    double angle = to_number(ic, car(cdr(s)))->u.number.value;
+    double distance = to_number(ic, car(cdr(cdr(s))))->u.number.value;
+    double stepsize = to_number(ic, car(cdr(cdr(cdr(s)))))->u.number.value;
+
+    sexpr *conditions = car(cdr(cdr(cdr(cdr(s)))));
+    protect_ptr(ic->g, (void **)&conditions);
+
+    sexpr *orig_conditions = conditions;
+    protect_ptr(ic->g, (void **)&orig_conditions);
+
+    sexpr *turtles = car(cdr(cdr(cdr(cdr(cdr(s))))));
+    protect_ptr(ic->g, (void **)&turtles);
+
+    sexpr *orig_turtles = turtles;
+    protect_ptr(ic->g, (void **)&orig_turtles);
+
+    PixelCriteriaVector criteria;
+    IntVector turtlevec;
+
+    while(!is_nil(ic, conditions)) {
+        sexpr *cond = car(conditions);
+        protect_ptr(ic->g, (void **)&cond);
+
+        if(cond->t == CONS) {
+                if(length(ic, cond) != 3)
+                    bad_argument(ic, orig_conditions);
+            unsigned char red = toint(ic, car(cond));
+            unsigned char green = toint(ic, car(cdr(cond)));
+            unsigned char blue = toint(ic, car(cdr(cdr(cond))));
+            criteria.push_back(PixelCriteria(COLOUR, wxColour(red, green, blue)));
+        } else if(name_eq(cond, ic->n_pasttop)) {
+            criteria.push_back(PixelCriteria(PAST_TOP));
+        } else if(name_eq(cond, ic->n_pastbottom)) {
+            criteria.push_back(PixelCriteria(PAST_BOTTOM));
+        } else if(name_eq(cond, ic->n_pastleft)) {
+            criteria.push_back(PixelCriteria(PAST_LEFT));
+        } else if(name_eq(cond, ic->n_pastright)) {
+            criteria.push_back(PixelCriteria(PAST_RIGHT));
+        } else {
+            bad_argument(ic, orig_conditions);
+        }
+
+        unprotect_ptr(ic->g);
+
+        STORE(ic->g, NULL, conditions, cdr(conditions));
+    }
+
+    while(!is_nil(ic, turtles)) {
+        turtlevec.push_back(toint(ic, car(turtles)));
+        STORE(ic->g, NULL, turtles, cdr(turtles));
+    }
+
+    int result = wxwaitfor_number(ic,
+        new DrawEvent(MOVEUNTIL, turtle, angle, distance, stepsize, criteria,
+                      turtlevec));
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return mk_number(ic, result);
+}
+
+
+
 sexpr *ttouching(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     int turtle2 = toint(ic, car(cdr(s)));
+    unprotect_ptr(ic->g);
     if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLE_TOUCHING,
                                                    turtle,
                                                    turtle2,
@@ -2799,10 +3353,12 @@ sexpr *ttouching(IC *ic, sexpr *s) {
 }
 
 sexpr *txytouching(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic,                             car(s));
     int x = toint(ic,                              car(cdr(s)));
     int y = toint(ic,                          car(cdr(cdr(s))));
     int turtle2 = toint(ic,                car(cdr(cdr(cdr(s)))));
+    unprotect_ptr(ic->g);
     if(wxwaitfor_number(ic, new CollisionTestEvent(TURTLEXY_TOUCHING,
                                                    turtle,
                                                    x,
@@ -2814,6 +3370,7 @@ sexpr *txytouching(IC *ic, sexpr *s) {
 }
 
 sexpr *twhostouching(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     sexpr *ret = ic->g_nil;
     int i, count;
@@ -2826,14 +3383,19 @@ sexpr *twhostouching(IC *ic, sexpr *s) {
 
     for(i = 0; i < count; i++) {
         turtle = (int) wxwaitfor_number_noevent(ic);
-        STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, turtle), ret));
+        sexpr *tnum = mk_number(ic, turtle);
+        protect_ptr(ic->g, (void **)&tnum);
+        STORE(ic->g, NULL, ret, cons(ic, tnum, ret));
+        unprotect_ptr(ic->g);
     }
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return ret;
 }
 
 sexpr *txywhostouching(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic,                             car(s));
     int x = toint(ic,                              car(cdr(s)));
     int y = toint(ic,                          car(cdr(cdr(s))));
@@ -2848,14 +3410,19 @@ sexpr *txywhostouching(IC *ic, sexpr *s) {
 
     for(i = 0; i < count; i++) {
         turtle = (int) wxwaitfor_number_noevent(ic);
-        STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, turtle), ret));
+        sexpr *tnum = mk_number(ic, turtle);
+        protect_ptr(ic->g, (void **)&tnum);
+        STORE(ic->g, NULL, ret, cons(ic, tnum, ret));
+        unprotect_ptr(ic->g);
     }
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return ret;
 }
 
 sexpr *whosover(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int x = toint(ic,     car(s));
     int y = toint(ic, car(cdr(s)));
     int turtle, i, count;
@@ -2869,93 +3436,113 @@ sexpr *whosover(IC *ic, sexpr *s) {
 
     for(i = 0; i < count; i++) {
         turtle = (int) wxwaitfor_number_noevent(ic);
-        STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, turtle), ret));
+        sexpr *tnum = mk_number(ic, turtle);
+        protect_ptr(ic->g, (void **)&tnum);
+        STORE(ic->g, NULL, ret, cons(ic, tnum, ret));
+        unprotect_ptr(ic->g);
     }
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return ret;
 }
 
 sexpr *background(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *ret = ic->g_nil;
-    int color;
-
     protect_ptr(ic->g, (void **) &ret);
 
-    color = (int) wxwaitfor_number(ic, new DrawEvent(BACKGROUND));
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
+    sexpr *blue = mk_number(ic, (int) wxwaitfor_number(ic, new DrawEvent(BACKGROUND)));
+    protect_ptr(ic->g, (void **)&blue);
+    sexpr *green = mk_number(ic, (int) wxwaitfor_number_noevent(ic));
+    protect_ptr(ic->g, (void **)&green);
+    sexpr *red = mk_number(ic, (int) wxwaitfor_number_noevent(ic));
+    protect_ptr(ic->g, (void **)&red);
 
-    color = (int) wxwaitfor_number_noevent(ic);
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
+    STORE(ic->g, NULL, ret, listl(ic, red, green, blue, NULL));
 
-    color = (int) wxwaitfor_number_noevent(ic);
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
-
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return ret;
 }
 
 sexpr *tpencolor(IC *ic, sexpr *s) {
-    sexpr *ret = ic->g_nil;
-    int turtle = toint(ic, car(s));
-    int color;
+    protect_ptr(ic->g, (void **)&s);
 
+    sexpr *ret = ic->g_nil;
     protect_ptr(ic->g, (void **) &ret);
 
-    color = (int) wxwaitfor_number(ic, new DrawEvent(PENCOLOR, turtle));
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
+    int turtle = toint(ic, car(s));
 
-    color = (int) wxwaitfor_number_noevent(ic);
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
+    sexpr *blue = mk_number(ic, (int) wxwaitfor_number(ic, new DrawEvent(PENCOLOR, turtle)));
+    protect_ptr(ic->g, (void **)&blue);
+    sexpr *green = mk_number(ic, (int) wxwaitfor_number_noevent(ic));
+    protect_ptr(ic->g, (void **)&green);
+    sexpr *red = mk_number(ic, (int) wxwaitfor_number_noevent(ic));
+    protect_ptr(ic->g, (void **)&red);
 
-    color = (int) wxwaitfor_number_noevent(ic);
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
+    STORE(ic->g, NULL, ret, listl(ic, red, green, blue, NULL));
 
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return ret;
 }
 
 sexpr *tcolorunder(IC *ic, sexpr *s) {
-    sexpr *ret = ic->g_nil;
-    int turtle = toint(ic, car(s));
-    int color;
+    protect_ptr(ic->g, (void **)&s);
 
+    sexpr *ret = ic->g_nil;
     protect_ptr(ic->g, (void **) &ret);
 
-    color = (int) wxwaitfor_number(ic, new DrawEvent(COLORUNDER, turtle));
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
+    int turtle = toint(ic, car(s));
 
-    color = (int) wxwaitfor_number_noevent(ic);
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
+    sexpr *blue = mk_number(ic, (int) wxwaitfor_number(ic, new DrawEvent(COLORUNDER, turtle)));
+    protect_ptr(ic->g, (void **)&blue);
+    sexpr *green = mk_number(ic, (int) wxwaitfor_number_noevent(ic));
+    protect_ptr(ic->g, (void **)&green);
+    sexpr *red = mk_number(ic, (int) wxwaitfor_number_noevent(ic));
+    protect_ptr(ic->g, (void **)&red);
 
-    color = (int) wxwaitfor_number_noevent(ic);
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
+    STORE(ic->g, NULL, ret, listl(ic, red, green, blue, NULL));
 
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return ret;
 }
 
 sexpr *txycolorunder(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     sexpr *ret = ic->g_nil;
+    protect_ptr(ic->g, (void **) &ret);
+
     int turtle = toint(ic,           car(s));
     double x = to_number(ic,     car(cdr(s)))->u.number.value;
     double y = to_number(ic, car(cdr(cdr(s))))->u.number.value;
-    int color;
 
-    protect_ptr(ic->g, (void **) &ret);
+    sexpr *blue = mk_number(ic, (int) wxwaitfor_number(ic, new DrawEvent(XYCOLORUNDER, turtle, x, y)));
+    protect_ptr(ic->g, (void **)&blue);
+    sexpr *green = mk_number(ic, (int) wxwaitfor_number_noevent(ic));
+    protect_ptr(ic->g, (void **)&green);
+    sexpr *red = mk_number(ic, (int) wxwaitfor_number_noevent(ic));
+    protect_ptr(ic->g, (void **)&red);
+    STORE(ic->g, NULL, ret, listl(ic, red, green, blue, NULL));
 
-    color = (int) wxwaitfor_number(ic, new DrawEvent(XYCOLORUNDER, turtle, x, y));
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
-
-    color = (int) wxwaitfor_number_noevent(ic);
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
-
-    color = (int) wxwaitfor_number_noevent(ic);
-    STORE(ic->g, NULL, ret, cons(ic, mk_number(ic, color), ret));
-
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return ret;
@@ -2981,16 +3568,20 @@ sexpr *tfill(IC *ic, sexpr *s) {
 }
 
 sexpr *tlabel(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     wxString label(get_cstring(ic, to_name(ic, car(cdr(s)))));
     wxwaitfor_condition(ic, new DrawEvent(LABEL, turtle, label));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tsettext(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int turtle = toint(ic, car(s));
     wxString text(get_cstring(ic, to_name(ic, car(cdr(s)))));
     wxwaitfor_condition(ic, new DrawEvent(SETTEXT, turtle, text));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -3023,6 +3614,7 @@ sexpr *pollkey(IC *ic, sexpr *s) {
 }
 
 sexpr *toot(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int voice = toint(ic, car(s));
     double frequency = to_number(ic, car(cdr(s)))->u.number.value;
     double duration = to_number(ic, car(cdr(cdr(s))))->u.number.value;
@@ -3038,10 +3630,12 @@ sexpr *toot(IC *ic, sexpr *s) {
                                                    pan,
                                                    attack,
                                                    decay)));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
 sexpr *tootreplace(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
     int voice = toint(ic, car(s));
     double frequency = to_number(ic, car(cdr(s)))->u.number.value;
     double duration = to_number(ic, car(cdr(cdr(s))))->u.number.value;
@@ -3057,6 +3651,7 @@ sexpr *tootreplace(IC *ic, sexpr *s) {
                                                    pan,
                                                    attack,
                                                    decay)));
+    unprotect_ptr(ic->g);
     return ic->g_unbound;
 }
 
@@ -3097,6 +3692,188 @@ sexpr *timeleft(IC *ic, sexpr *s) {
     throw_error(ic, ic->continuation->line);
 }
 
+double recordwaitfor_number_noevent(IC *ic) {
+    wxMessageQueueError res;
+    double response = 0;
+
+    do {
+        res = RecordingResponses.ReceiveTimeout(100, response);
+        if(!ic->terminal_mode && wxThread::This()->TestDestroy())
+            longjmp(ic->quit, 1);
+    } while(res == wxMSGQUEUE_TIMEOUT);
+
+    if(res == wxMSGQUEUE_NO_ERROR)
+        return response;
+
+    eprintf(ic, "Error receiving double from recording thread");
+    throw_error(ic, ic->continuation->line);
+}
+
+double recordwaitfor_number(IC *ic, RecordingCommand const &command) {
+    RecordingCommands.Post(command);
+    return recordwaitfor_number_noevent(ic);
+}
+
+AudioDeviceList waitfor_audiodevicelist(IC *ic,
+                                        RecordingCommand const &command) {
+    wxMessageQueueError res;
+    AudioDeviceList response;
+
+    RecordingCommands.Post(command);
+
+    do {
+        res = AudioDeviceLists.ReceiveTimeout(100, response);
+        if(!ic->terminal_mode && wxThread::This()->TestDestroy())
+            longjmp(ic->quit, 1);
+    } while(res == wxMSGQUEUE_TIMEOUT);
+
+    if(res == wxMSGQUEUE_NO_ERROR)
+        return response;
+
+    eprintf(ic, "Error receiving device list from recording thread");
+    throw_error(ic, ic->continuation->line);
+}
+
+sexpr *audiodevices(IC *ic, sexpr *s) {
+    AudioDeviceList response = waitfor_audiodevicelist(ic, RecordingCommand(RecordingCommand::QUERY_DEVICES));
+
+    sexpr *ret = cons(ic, ic->g_nil, ic->g_nil);
+    protect_ptr(ic->g, (void **)&ret);
+
+    sexpr *tail = ret;
+    protect_ptr(ic->g, (void **)&tail);
+
+    for(AudioDeviceList::iterator i = response.begin(); i != response.end(); i++) {
+        sexpr *sublist = ic->g_nil;
+        protect_ptr(ic->g, (void **)&sublist);
+
+        sexpr *rate = mk_number(ic, i->default_sample_rate);
+        STORE(ic->g, NULL, sublist, cons(ic, rate, sublist));
+
+        sexpr *max_outputs = mk_number(ic, i->max_outputs);
+        STORE(ic->g, NULL, sublist, cons(ic, max_outputs, sublist));
+
+        sexpr *max_inputs = mk_number(ic, i->max_inputs);
+        STORE(ic->g, NULL, sublist, cons(ic, max_inputs, sublist));
+
+        sexpr *name = intern(ic, i->name);
+        STORE(ic->g, NULL, sublist, cons(ic, name, sublist));
+
+        push_back(ic, &tail, sublist);
+        unprotect_ptr(ic->g);
+    }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return cdr(ret);
+}
+
+sexpr *startcapture(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+
+    int dev = toint(ic, car(s));
+    int rate = toint(ic, car(cdr(s)));
+    int frame_size = toint(ic, car(cdr(cdr(s))));
+
+
+    RecordingCommands.Post(RecordingCommand(RecordingCommand::START,
+                                            dev, rate, frame_size));
+
+    unprotect_ptr(ic->g);
+    return ic->g_unbound;
+}
+
+sexpr *stopcapture(IC *ic, sexpr *s) {
+    RecordingCommands.Post(RecordingCommand(RecordingCommand::STOP));
+    return ic->g_unbound;
+}
+
+sexpr *frequencypowers(IC *ic, sexpr *s) {
+    wxMessageQueueError res;
+    protect_ptr(ic->g, (void **)&s);
+
+    STORE(ic->g, NULL, s, car(s));
+
+    RecordingCommand command(RecordingCommand::QUERY_FREQUENCIES);
+    while(!is_nil(ic, s)) {
+        if(car(s)->t != CONS) bad_argument(ic, car(s));
+        if(cdr(car(s))->t != CONS) bad_argument(ic, car(s));
+        double frequency = to_number(ic, car(car(s)))->u.number.value;
+        double variation = to_number(ic, car(cdr(car(s))))->u.number.value;
+        command.frequency_ranges.push_back(FrequencyRange(frequency, variation));
+        STORE(ic->g, NULL, s, cdr(s));
+    }
+
+    RecordingCommands.Post(command);
+
+    FrequencyPowerList response;
+
+    do {
+        res = FrequencyPowers.ReceiveTimeout(100, response);
+        if(!ic->terminal_mode && wxThread::This()->TestDestroy())
+            longjmp(ic->quit, 1);
+    } while(res == wxMSGQUEUE_TIMEOUT);
+
+    if(res != wxMSGQUEUE_NO_ERROR) {
+        eprintf(ic, "Error receiving power list from recording thread");
+        throw_error(ic, ic->continuation->line);
+    }
+
+    sexpr *ret = cons(ic, ic->g_nil, ic->g_nil);
+    protect_ptr(ic->g, (void **)&ret);
+
+    sexpr *tail = ret;
+    protect_ptr(ic->g, (void **)&tail);
+
+    for(FrequencyPowerList::iterator i = response.begin();
+        i != response.end();
+        i++) {
+        push_back(ic, &tail, mk_number(ic, *i));
+    }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return cdr(ret);
+}
+
+sexpr *startdtmf(IC *ic, sexpr *s) {
+    protect_ptr(ic->g, (void **)&s);
+    float dtmf_high_threshold = (float)to_number(ic, car(s))->u.number.value;
+    float dtmf_low_threshold = (float)to_number(ic, car(cdr(s)))->u.number.value;
+    RecordingCommands.Post(RecordingCommand(RecordingCommand::START_DTMF,
+                                            dtmf_high_threshold,
+                                            dtmf_low_threshold));
+    unprotect_ptr(ic->g);
+    return ic->g_unbound;
+}
+
+sexpr *silence_audio_logging(IC *ic, sexpr *s) {
+    RecordingCommands.Post(RecordingCommand(RecordingCommand::SILENCE_LOGGING));
+    return ic->g_unbound;
+}
+
+sexpr *fetchdtmf(IC *ic, sexpr *s) {
+    wxMessageQueueError res;
+    int response = 0;
+    res = DTMFValues.ReceiveTimeout(0, response);
+    if(res == wxMSGQUEUE_TIMEOUT)
+        return ic->g_nil;
+
+    if(res != wxMSGQUEUE_NO_ERROR) {
+        eprintf(ic, "Error receiving DTMF value from recording thread");
+        throw_error(ic, ic->continuation->line);
+    }
+
+    char ch = (char) response;
+    return intern_len_static(ic, &ch, 0, 1);
+}
+
+sexpr *time_subr(IC *ic, sexpr *s) {
+    return mk_number(ic, wxGetLocalTime());
+}
+
 /* END SUBR's */
 
 /* Utility function for adding a SUBR to the global environment. */
@@ -3110,19 +3887,25 @@ void initialize_subr(IC *ic, const char *namestr,
 
     /* Create the name we will store it in. */
     sexpr *name = intern(ic, namestr);
+    protect_ptr(ic->g, (void **)&name);
 
     /* Wrap the C function in a SUBR object. */
     sexpr *func = mk_subr(ic, name, f);
+    protect_ptr(ic->g, (void **)&func);
 
     /* Wrap the SUBR object in a PROC object containing the minimum,
        default, and maximum argument counts. */
     sexpr *proc = mk_proc(ic, func, minargs, defargs, maxargs);
+    protect_ptr(ic->g, (void **)&proc);
 
     /* Store the PROC in the function slot of the symbol associated
        with the name. */
     STORE(ic->g, name->u.name.symbol,
           name->u.name.symbol->function, proc);
 
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 /* Utility function for adding an FSUBR to the global environment. */
@@ -3135,29 +3918,39 @@ void initialize_fsubr(IC *ic, const char *namestr,
                               int maxargs) {
     /* Create the name we will store it in. */
     sexpr *name = intern(ic, namestr);
+    protect_ptr(ic->g, (void **)&name);
 
     /* Wrap the C function in a FSUBR object. */
     sexpr *func = mk_fsubr(ic, name, f);
+    protect_ptr(ic->g, (void **)&func);
 
     /* Wrap the FSUBR object in a PROC object containing the minimum,
        default, and maximum argument counts. */
     sexpr *proc = mk_proc(ic, func, minargs, defargs, maxargs);
+    protect_ptr(ic->g, (void **)&proc);
 
     /* Store the FSUBR in the function slot of the symbol associated
        with the name. */
     STORE(ic->g, name->u.name.symbol,
           name->u.name.symbol->function, proc);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 /* Add all of the primitives to the global environment. */
 /* Garbage collection is not yet enabled when this is run, so
    we can be a little careless about not protecting things. */
 void initialize_global_environment(IC *ic) {
+    sexpr *version = intern(ic, PACKAGE_VERSION);
+    protect_ptr(ic->g, (void **)&version);
     STORE(ic->g,
           ic->n_logoversion->u.name.symbol,
           ic->n_logoversion->u.name.symbol->value,
-          intern(ic, PACKAGE_VERSION));
-       
+          version);
+
+    unprotect_ptr(ic->g);
 
 
     initialize_subr(ic, "inc", inc, 1, 1, 1);
@@ -3379,6 +4172,20 @@ void initialize_global_environment(IC *ic) {
     initialize_subr(ic, "repcount", hash_subr, 0, 0, 0);
     initialize_subr(ic, "?", question_subr, 0, 0, 1);
 
+    initialize_subr(ic, "%toot", toot, 7, 7, 7);
+    initialize_subr(ic, "%tootreplace", tootreplace, 7, 7, 7);
+    initialize_subr(ic, "tootend", tootend, 1, 1, 1);
+    initialize_subr(ic, "tootclear", tootclear, 0, 0, 0);
+    initialize_subr(ic, "%timeleft", timeleft, 1, 1, 1);
+    initialize_subr(ic, "audiodevices", audiodevices, 0, 0, 0);
+    initialize_subr(ic, "startcapture", startcapture, 3, 3, 3);
+    initialize_subr(ic, "stopcapture", stopcapture, 0, 0, 0);
+    initialize_subr(ic, "frequencypowers", frequencypowers, 1, 1, 1);
+    initialize_subr(ic, "startdtmf", startdtmf, 2, 2, 2);
+    initialize_subr(ic, "fetchdtmf", fetchdtmf, 0, 0, 0);
+    initialize_subr(ic, "silence_audio_logging", silence_audio_logging, 0, 0, 0);
+    initialize_subr(ic, "time", time_subr, 0, 0, 0);
+
     if(!ic->terminal_mode) {
         initialize_subr(ic, "wxedit", wxedit_subr, 1, 1, 1);
         initialize_subr(ic, "tsetxy", tsetxy, 3, 3, 3);
@@ -3430,6 +4237,7 @@ void initialize_global_environment(IC *ic) {
         initialize_subr(ic, "saveturtle", saveturtle, 2, 2, 2);
         initialize_subr(ic, "tover", tover, 4, 4, 4);
         initialize_subr(ic, "txyover", txyover, 6, 6, 6);
+        initialize_subr(ic, "tmoveuntil", tmoveuntil, 6, 6, 6);
         initialize_subr(ic, "ttouching", ttouching, 2, 2, 2);
         initialize_subr(ic, "txytouching", txytouching, 4, 4, 4);
         initialize_subr(ic, "twhostouching", twhostouching, 1, 1, 1);
@@ -3455,10 +4263,5 @@ void initialize_global_environment(IC *ic) {
         initialize_subr(ic, "savepict", savepict, 1, 1, 1);
         initialize_subr(ic, "loadpict", loadpict, 1, 1, 1);
         initialize_subr(ic, "pollkey", pollkey, 1, 1, 1);
-        initialize_subr(ic, "%toot", toot, 7, 7, 7);
-        initialize_subr(ic, "%tootreplace", tootreplace, 7, 7, 7);
-        initialize_subr(ic, "tootend", tootend, 1, 1, 1);
-        initialize_subr(ic, "tootclear", tootclear, 0, 0, 0);
-        initialize_subr(ic, "%timeleft", timeleft, 1, 1, 1);
     }
 }

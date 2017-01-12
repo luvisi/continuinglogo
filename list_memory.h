@@ -27,7 +27,23 @@
 
 /* This is a wrapper around allocate that aborts execution on an
    out of memory error. */
-void *ic_xmalloc(IC *ic, size_t size, pointer_iterator marker);
+inline
+#ifdef __GNUC__
+#ifdef FORCE_INLINES
+__attribute__ ((__always_inline__))
+#endif
+#endif
+void *ic_xmalloc(IC *ic, size_t size, pointer_iterator marker) {
+    void *ret = gc_allocate(ic->g, size, marker);
+    if(ret == NULL) {
+        fprintf(stderr, "Out of memory!\n");
+        longjmp(ic->quit, 1);
+    }
+
+    memset(ret, '\0', size);
+    return ret;
+}
+
 
 /* These are the declarations for "struct sexpr" and "struct continuation"
    and the declarations for the associated mark_* and mk_* functions. */
@@ -130,14 +146,16 @@ sexpr *intern(IC *ic, const char *name);
    assumed to point into head somewhere.  The new word will point to 
    head for garbage collection purposes, and use name and len as is.
  */
-sexpr *intern_len(IC *ic, const char *head, const char *name, unsigned int len);
+sexpr *intern_len_gc(IC *ic, const char *head, unsigned int offset, unsigned int len);
+sexpr *intern_len_static(IC *ic, const char *head, unsigned int offset, unsigned int len);
 
 /* Creates garbage collected copy of namestr if namehead is NULL and
    creates an unbound and uninterned symbol using mk_symbol.  Should not
    generally be used outside of list_memory.c.  Only here for one call
    in interpreter.c and one call in global_environment.c.
  */
-sexpr *new_name(IC *ic, const char *namehead, const char *namestr, unsigned int len);
+sexpr *new_name_gc(IC *ic, const char *namehead, unsigned int offset, unsigned int len);
+sexpr *new_name_static(IC *ic, const char *namehead, unsigned int offset, unsigned int len);
 
 
 /* This is the garbage collection callback that removes cons cells from
@@ -155,7 +173,13 @@ void cleanup_name_table(GC *g);
    Two names are considered the same if they have the same SYMBOL,
    even if they are different NAME objects.
  */
-static inline int name_eq(sexpr *a, sexpr *b) {
+inline
+#ifdef __GNUC__
+#ifdef FORCE_INLINES
+__attribute__ ((__always_inline__))
+#endif
+#endif
+int name_eq(sexpr *a, sexpr *b) {
     struct symbol *syma, *symb;
 
     if(a == NULL || b == NULL)
@@ -274,5 +298,129 @@ sexpr *list_to_array(IC *ic, sexpr *l, int origin);
 /* Returns 1 if e is a number or a name that can be turned into a number.
    Returns 0 otherwise. */
 int numberp(IC *ic, sexpr *e);
+
+/* Destructively adds an sexpr to the end of a list.
+   tail is the address of a pointer that points to the last element
+   in the list.
+   value is the value that will be placed into the car() of a new
+   CONS at the end of the list. */
+void push_back(IC *ic, sexpr **tail, sexpr *value);
+
+/* List creation utilities. */
+sexpr *listl(IC *ic, ...); /* sexpr *l = listl(ic, foo, bar, NULL); */
+sexpr *listl_prepend(IC *ic, sexpr *tail, ...);
+sexpr *copylist(IC *ic, sexpr *l);
+
+/* Swaps the values stored in a frame with the values stored in the
+   symbols referenced in the frame.  This same function is used both
+   for entering a frame and for leaving it.  It is its own inverse.
+   No need to protect anything since no memory is allocated and no
+   garbage collections can happen during this procedure.
+ */
+inline
+#ifdef __GNUC__
+#ifdef FORCE_INLINES
+__attribute__ ((__always_inline__))
+#endif
+#endif
+void do_swap(IC *ic, frame *f) {
+    sexpr *bindings = f->bindings;
+
+    while(!is_nil(ic, bindings)) {
+        sexpr *binding = car(bindings);
+
+        sexpr *name = car(binding);
+        sexpr *tmp  = cdr(binding);
+        STORE(ic->g, binding,
+              cdr(binding), name->u.name.symbol->value);
+        STORE(ic->g, name->u.name.symbol,
+              name->u.name.symbol->value, tmp);
+        bindings = cdr(bindings);
+    }
+}
+
+/* reroot changes the current active frame to frame f.
+
+   It does this by reversing all of the to_active pointers, and then
+   walking from the current root to the new root.
+
+   First, bindings are swapped during a trip up the tree to the common
+   ancestor.
+
+   The common ancestor bindings are not swapped (both the old and new
+   frames are under it, so we wish to remain within it).
+
+   Then, bindings are swapped during the trip down the tree to the new
+   root.
+ */
+inline
+#ifdef __GNUC__
+#ifdef FORCE_INLINES
+__attribute__ ((__always_inline__))
+#endif
+#endif
+void reroot(IC *ic, frame *f) {
+    frame *newf = NULL;
+    frame *old = f;
+    frame *tmp;
+
+    /* First walk, adjust to_active pointers to point to self.
+       Frames are taken off of old, adjusted to point to new, and
+       stuck at the head of new. */
+    while(old != NULL) {
+        /* Pop off of old */
+        tmp = old;
+        old = old->to_active;
+
+        /* Push onto newf */
+        tmp->to_active = newf;
+        newf = tmp;
+    }
+
+    /* Second walk, unwind all frames up to common ancestor.
+       We are at the destination if to_active == NULL.
+       We are at the common ancestor if to_active != parent. */
+    while(newf->to_active != NULL && newf->to_active == newf->parent) {
+        do_swap(ic, newf);
+        newf = newf->to_active;
+    }
+
+    /* Move down to branch to wind.
+       The common ancestor does not get a do_swap() because its
+       bindings are common to both the old and the new frames.
+       If to_active is NULL, then we're already at our new frame
+       and we're done, so the loop below will do nothing. */
+    newf = newf->to_active;
+
+    /* Wind all frames down to self/new root. */
+    while(newf != NULL) {
+        do_swap(ic, newf);
+        newf = newf->to_active;
+    }
+}
+
+inline
+#ifdef __GNUC__
+#ifdef FORCE_INLINES
+__attribute__ ((__always_inline__))
+#endif
+#endif
+int length(IC *ic, sexpr *e) {
+    protect_ptr(ic->g, (void **)&e);
+    int len = 0;
+
+    while(!is_nil(ic, e) && e->t == CONS) {
+        len++;
+        STORE(ic->g, NULL, e, cdr(e));
+    }
+
+    if(!is_nil(ic, e)) {
+        fprintf(stderr, "Malformed argument to length!\n");
+        longjmp(ic->quit, 1);
+    }
+
+    unprotect_ptr(ic->g);
+    return len;
+}
 
 #endif

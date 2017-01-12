@@ -277,7 +277,7 @@
 
 /* The maximum number of pointers to objects that can
    be protected at once. */
-#define PROTECT_MAX 1024
+#define PROTECT_MAX 4096
 
 
 /* Colors from the tri-color abstraction.
@@ -428,7 +428,7 @@ struct gc_context {
     void (*set_gc_mode)(struct gc_context *g, enum gc_mode mode);
     void (*set_gc_work_per_alloc)(struct gc_context *g, int count);
     void (*store)(struct gc_context *g, void *obj, void **field, void *pointer);
-    void *(*protect_ptr)(struct gc_context *g, void **o);
+    void (*protect_ptr)(struct gc_context *g, void **o);
     void (*unprotect_ptr)(struct gc_context *g);
 };
 
@@ -503,11 +503,18 @@ typedef GC *(*gc_creator)(pointer_iterator, void *, unsigned int, unsigned int);
    modifying.
  */
 
+/*
 #define STORE(gc, obj, field, pointer) \
     (gc->store((gc), (obj), (void **)&(field), (pointer)))
 
 #define protect_ptr(g, o) (g->protect_ptr((g), (o)))
 #define unprotect_ptr(g) (g->unprotect_ptr((g)))
+*/
+
+#define STORE(gc, obj, field, pointer) \
+    (*(void **)(&field) = (void *)(pointer))
+#define protect_ptr(g, o) ((g)->protect_ptr_stack[(g)->protect_ptr_count++] = (o))
+#define unprotect_ptr(g) ((g)->protect_ptr_count--)
 
 
 #endif

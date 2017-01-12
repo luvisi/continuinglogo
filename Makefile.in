@@ -10,18 +10,19 @@ librarydir=$(datarootdir)/$(PACKAGE_TARNAME)
 OBJECTS=audio.o ms_gc.o interpreter.o list_memory.o main.o reader.o \
         global_environment.o structures.o logoreader.o \
         weak_cons.o treeify.o byte_buffer.o io.o ttymodes.o \
-        wxui.o turtles.o
+        wxui.o turtles.o conservative_gc.o copying_gc.o
 STRUCTURES=structures.c structures.h
 PROGRAM=clogo
 #CC=g++
 CC=`wx-config --cxx --cxxflags`
 OPTFLAGS=-O3 -fno-align-functions
+INCLUDEFLAGS=-I.
 #PROFILE_FLAGS=-pg -static-libgcc -lc_p
 #COVERAGE_FLAGS=--coverage
 DIRFLAGS=-DLIBRARYDIR=\"$(librarydir)\"
 #CFLAGS=-g -Wall -fPIE $(OPTFLAGS) $(PROFILE_FLAGS) $(COVERAGE_FLAGS) $(DIRFLAGS)
 #LDFLAGS=-lm -pie $(PROFILE_FLAGS) $(COVERAGE_FLAGS) `wx-config --libs core,base`
-CFLAGS=-g -Wall $(OPTFLAGS) $(PROFILE_FLAGS) $(COVERAGE_FLAGS) $(DIRFLAGS)
+CFLAGS=-g -Wall $(OPTFLAGS) $(PROFILE_FLAGS) $(COVERAGE_FLAGS) $(DIRFLAGS) $(INCLUDEFLAGS)
 LDFLAGS=-lm -lgc -lportaudio $(PROFILE_FLAGS) $(COVERAGE_FLAGS) `wx-config --libs core,base`
 
 all: $(PROGRAM)

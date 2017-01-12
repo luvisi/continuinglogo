@@ -40,9 +40,7 @@ static void conservative_set_gc_work_per_alloc(GC *g, int count) { }
 /* Only one mode. */
 static void conservative_set_gc_mode(GC *g, enum gc_mode mode) { }
 
-static void conservative_free_gc(GC *g) {
-    free(g);
-}
+static void conservative_free_gc(GC *g) { }
 
 /* Straight pass through. */
 static void *conservative_allocate(GC *g, size_t length, pointer_iterator iterator) {
@@ -57,7 +55,7 @@ static void conservative_store(GC *g, void *obj, void **field, void *pointer) {
 }
 
 /* All pointers are protected automatically.  Nothing to do here. */
-static void *conservative_protect_ptr(GC *g, void **o) { return o; }
+static void conservative_protect_ptr(GC *g, void **o) { }
 static void conservative_unprotect_ptr(GC *g) { }
 
 /* At the start of a thread other than the main thread, we need to

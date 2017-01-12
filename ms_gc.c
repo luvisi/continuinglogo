@@ -501,7 +501,7 @@ static void ms_store(GC *g, void *obj, void **field, void *pointer) {
     }
 }
 
-static void *ms_protect_ptr(GC *g, void **o) {
+static void ms_protect_ptr(GC *g, void **o) {
     void mark_object(GC *g, void **p);
 
     if(g->protect_ptr_count == PROTECT_MAX) {
@@ -516,7 +516,6 @@ static void *ms_protect_ptr(GC *g, void **o) {
         mark_object(g, o);
 
     g->protect_ptr_stack[g->protect_ptr_count++] = o;
-    return o;
 }
 
 static void ms_unprotect_ptr(GC *g) {

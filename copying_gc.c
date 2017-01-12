@@ -12,6 +12,12 @@
 #include "pcgc.h"
 #include "list_memory.h"
 #include <stdio.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <stdlib.h>
+
+#define str(x) #x
+#define xstr(x) str(x)
 
 /* I recommend reading pcgc.h before reading this file.  The comments
    in this code assume the reader is familiar with the concepts explained
@@ -29,12 +35,18 @@ static void register_weak_pointer(GC *g, void **p);
 static void copy_object(GC *g, void **p);
 static void copying_collect_garbage(GC *g);
 
+static int pagesize;
 
 /* A copying collector can't really be disabled.  Once a semispace is full,
    collection is mandatory.  We just have to hope the client can get
    things into a consistent starting state before the first collection. */
-static void copying_enable_gc(GC *g) { }
-static void copying_disable_gc(GC *g) { }
+static void copying_enable_gc(GC *g) {
+    g->garbage_collection_enabled = 1;
+}
+
+static void copying_disable_gc(GC *g) {
+    g->garbage_collection_enabled = 1;
+}
 
 /* Value to which weak pointers get reset if they point to objects
    that will be reclaimed. */
@@ -71,17 +83,23 @@ static void *copying_allocate(GC *g, size_t length, pointer_iterator iterator) {
     struct node *n;
     length += sizeof(node);
 
+//    if(g->garbage_collection_enabled) {
+//        collect_garbage(g);
+//    }
+
     //printf("Allocating node, %u/%u\n", g->active_semispace_used, g->active_semispace_size);
 
     /* We try twice before giving up since we may end up growing
        during the second try. */
-    if(g->active_semispace_used + length > g->active_semispace_size)
-        copying_collect_garbage(g);
-    if(g->active_semispace_used + length > g->active_semispace_size)
-        copying_collect_garbage(g);
     if(g->active_semispace_used + length > g->active_semispace_size) {
-        fprintf(stderr, "Out of memory in copying_allocate!\n");
-        exit(EXIT_FAILURE);
+        copying_collect_garbage(g);
+        if(g->active_semispace_used + length > g->active_semispace_size) {
+            copying_collect_garbage(g);
+            if(g->active_semispace_used + length > g->active_semispace_size) {
+                fprintf(stderr, "Out of memory in copying_allocate!\n");
+                exit(EXIT_FAILURE);
+            }
+        }
     }
 
     n = (node *) (g->active_semispace + g->active_semispace_used);
@@ -143,11 +161,16 @@ static void copying_collect_garbage(GC *g) {
     node *n;
     unsigned int temp_size, temp_used;
 
-    fprintf(stderr, "collecting garbage\n");
+    // fprintf(stderr, "collecting garbage\n");
 
     /* To collect garbage, we swap the active and inactive semispaces
        and copy everything to the active semispace. */
 
+    if(mprotect(g->inactive_semispace, g->inactive_semispace_size, PROT_WRITE)
+       < 0) {
+        perror(__FILE__ ":" xstr(__LINE__) " mprotect");
+        exit(EXIT_FAILURE);
+    }
 
     /* Swap semispaces */
     temp_semispace = g->active_semispace;
@@ -168,8 +191,11 @@ static void copying_collect_garbage(GC *g) {
 
     /* Grow active semispace if needed. */
     if(g->active_semispace_size < g->desired_semispace_size) {
-        free(g->active_semispace);
-        g->active_semispace = (char *)malloc(g->desired_semispace_size);
+        if(g->active_semispace)
+            free(g->active_semispace);
+        //g->active_semispace = (char *)malloc(g->desired_semispace_size);
+        g->active_semispace = (char *)aligned_alloc(pagesize,
+                                                    g->desired_semispace_size);
         if(g->active_semispace == NULL) {
             fprintf(stderr, "Out of memory growing semispace!\n");
             exit(EXIT_FAILURE);
@@ -198,7 +224,24 @@ static void copying_collect_garbage(GC *g) {
     clear_weak_pointers(g);
     if(g->post_collection_callback != NULL)
         g->post_collection_callback(g);
-    fprintf(stderr, "collected garbage\n");
+
+    memset(g->inactive_semispace, 0, g->inactive_semispace_size);
+
+#ifdef FORCE_FREE
+    free(g->inactive_semispace);
+    g->inactive_semispace = NULL;
+    g->inactive_semispace_size = 0;
+    g->inactive_semispace_used = 0;
+#else
+    if(mprotect(g->inactive_semispace, g->inactive_semispace_size, PROT_NONE)
+       < 0) {
+        perror(__FILE__ ":" xstr(__LINE__) " mprotect");
+        exit(EXIT_FAILURE);
+    }
+#endif
+
+//    fprintf(stderr, "Collected garbage.  Used/Semispace size: %d/%d\n",
+//                    g->active_semispace_used, g->active_semispace_size);
 }
 
 /* copy_object copies an object from the inactive semispace to the
@@ -269,14 +312,13 @@ static void copying_store(GC *g, void *obj, void **field, void *pointer) {
     *field = pointer;
 }
 
-static void *copying_protect_ptr(GC *g, void **o) {
-    if(g->protect_ptr_count == PROTECT_MAX) {
-        fprintf(stderr, "Exceeded maximum pointer protection count\n");
-        exit(EXIT_FAILURE);
-    }
+static void copying_protect_ptr(GC *g, void **o) {
+//    if(g->protect_ptr_count == PROTECT_MAX) {
+//        fprintf(stderr, "Exceeded maximum pointer protection count\n");
+//        exit(EXIT_FAILURE);
+//    }
 
     g->protect_ptr_stack[g->protect_ptr_count++] = o;
-    return o;
 }
 
 static void copying_unprotect_ptr(GC *g) {
@@ -290,6 +332,9 @@ GC *create_copying_gc(pointer_iterator rm,
                       void *roots,
                       unsigned int root_size,
                       unsigned int allocations_per_collection) {
+
+    pagesize = sysconf(_SC_PAGE_SIZE);
+
     GC *g = (GC *) malloc(sizeof(GC));
     if(g == NULL) return NULL;
 
@@ -297,6 +342,8 @@ GC *create_copying_gc(pointer_iterator rm,
                          malloc(sizeof(struct weak_pointer_block));
     if(g->weak_pointers == NULL)
         goto weak_pointers_failed;
+
+    g->garbage_collection_enabled = 0;
 
     g->weak_pointers->count = 0;
     g->weak_pointers->next = NULL;
@@ -311,21 +358,37 @@ GC *create_copying_gc(pointer_iterator rm,
 
     /* Semispace management */
 
-    g->minimum_reclaimed = 0.75;
-    g->desired_semispace_size = 
-    g->active_semispace_size =
-    g->inactive_semispace_size = 16*1024*1024; /* 16 MB */
-
-    g->active_semispace_used =
+    g->active_semispace_used = 0;
     g->inactive_semispace_used = 0;
 
-    g->active_semispace = (char *)malloc(g->active_semispace_size);
+    g->minimum_reclaimed = 0.75;
+    g->desired_semispace_size = 
+    g->active_semispace_size = 62*1024*1024; // 62 MB
+
+    //g->active_semispace = (char *)malloc(g->active_semispace_size);
+    g->active_semispace = (char *)aligned_alloc(pagesize,
+                                                g->active_semispace_size);
     if(g->active_semispace == NULL)
         goto active_semispace_failed;
 
-    g->inactive_semispace = (char *)malloc(g->inactive_semispace_size);
+#ifdef FORCE_FREE
+    g->inactive_semispace_size = 0;
+    g->inactive_semispace = NULL;
+#else
+    g->inactive_semispace_size = 62*1024*1024; // 62 MB
+    //g->inactive_semispace = (char *)malloc(g->inactive_semispace_size);
+    g->inactive_semispace = (char *)aligned_alloc(pagesize,
+                                                  g->inactive_semispace_size);
     if(g->inactive_semispace == NULL)
         goto inactive_semispace_failed;
+    if(mprotect(g->inactive_semispace, g->inactive_semispace_size, PROT_NONE)
+       < 0) {
+        perror(__FILE__ ":" xstr(__LINE__) " mprotect");
+        exit(EXIT_FAILURE);
+    }
+#endif
+
+
     /* End semispace management */
 
     g->thread_start = do_nothing;
@@ -344,7 +407,6 @@ GC *create_copying_gc(pointer_iterator rm,
     g->protect_ptr = copying_protect_ptr;
     g->unprotect_ptr = copying_unprotect_ptr;
 
-    printf("Made gc\n");
     return g;
 
     inactive_semispace_failed:

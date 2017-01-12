@@ -25,18 +25,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 /* Wrapper for allocate() that aborts execution if we are truly out of
    memory.
  */
+/*
 void *ic_xmalloc(IC *ic, size_t size, pointer_iterator marker) {
     void *ret = gc_allocate(ic->g, size, marker);
     if(ret == NULL) {
         fprintf(stderr, "Out of memory!\n");
         longjmp(ic->quit, 1);
     }
+
+    memset(ret, '\0', size);
     return ret;
 }
+*/
 
 /* Do nothing.  Strings do not have any pointers to garbage collected
    objects.
@@ -46,36 +51,46 @@ void mark_cstring(GC *g, void *c, object_marker om, weak_pointer_registerer wpr)
 /* Creates garbage collected copy of namestr if namehead is NULL and
    creates an unbound and uninterned name using mk_symbol and mk_name.
  */
-sexpr *new_name(IC *ic, const char *namehead, const char *namestr, unsigned int len) {
-    const char *new_head, *new_name;
-    struct symbol *symbol;
-    sexpr *name;
+sexpr *new_name_gc(IC *ic, const char *namehead, unsigned int offset, unsigned int len) {
+    protect_ptr(ic->g, (void **) &namehead);
 
-    if(namehead == NULL) {
-        char *tmp = (char *)ic_xmalloc(ic, len, mark_cstring);
-        strncpy(tmp, namestr, len);
-        new_head = new_name = tmp;
-    } else {
-        new_head = namehead;
-        new_name = namestr;
-    }
+    struct symbol *symbol = mk_symbol(ic,
+                                      ic->g_unbound,  /* Unbound value */
+                                      ic->g_unbound,  /* Unbound function */
+                                      ic->g_nil,      /* Empty function_source */
+                                      ic->g_nil,      /* Empty plist */
+                                      ic->g_nil,      /* Empty canonical name */
+                                      ic->g_nil,      /* Empty names list */
+                                      0);            /* No flags set */
+    protect_ptr(ic->g, (void **) &symbol);
 
+    sexpr *name = mk_name(ic, symbol, namehead, offset, len);
+    protect_ptr(ic->g, (void **) &name);
 
-    protect_ptr(ic->g, (void **) &new_head);
-    symbol = mk_symbol(ic,
-                       ic->g_unbound,  /* Unbound value */
-                       ic->g_unbound,  /* Unbound function */
-                       ic->g_nil,      /* Empty function_source */
-                       ic->g_nil,      /* Empty plist */
-                       ic->g_nil,      /* Empty canonical name */
-                       ic->g_nil,      /* Empty names list */
-                       0);             /* No flags set */
-    name = mk_name(ic, symbol, new_head, new_name-new_head, len);
     STORE(ic->g, symbol, symbol->canonical_name, name);
-    STORE(ic->g, symbol, symbol->names, cons(ic, name, ic->g_nil));
+
+    sexpr *namelist = cons(ic, name, ic->g_nil);
+    protect_ptr(ic->g, (void **) &namelist);
+    STORE(ic->g, symbol, symbol->names, namelist);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 
     return name;
+}
+
+/* Do not protect the namehead for static versions. */
+sexpr *new_name_static(IC *ic, const char *namehead, unsigned int offset, unsigned int len) {
+    char *tmp = (char *)ic_xmalloc(ic, len, mark_cstring);
+    protect_ptr(ic->g, (void **) &tmp);
+
+    strncpy(tmp, namehead+offset, len);
+
+    sexpr *ret = new_name_gc(ic, tmp, 0, len);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 int min(int a, int b) { return a < b ? a : b; }
@@ -85,30 +100,48 @@ int min(int a, int b) { return a < b ? a : b; }
 sexpr *find_or_create_name(IC *ic,
                            sexpr *cname,
                            const char *namestr,
+                           unsigned int offset,
                            unsigned int len) {
-    char *new_name;
-    sexpr *names;
-    sexpr *name;
-    struct symbol *symbol;
+    protect_ptr(ic->g, (void **) &cname);
+    protect_ptr(ic->g, (void **) &namestr);
 
-    names = cname->u.name.symbol->names;
+    sexpr *names = cname->u.name.symbol->names;
+    protect_ptr(ic->g, (void **) &names);
+
     while(!is_nil(ic, names)) {
         /* Comparison IS case sensitive here. */
         if(car(names)->u.name.length == len &&
-           !strncmp(car(names)->u.name.head+car(names)->u.name.start, namestr, len)) {
+           !strncmp(car(names)->u.name.head+car(names)->u.name.start, namestr+offset, len)) {
+            unprotect_ptr(ic->g);
+            unprotect_ptr(ic->g);
+            unprotect_ptr(ic->g);
             return car(names);
         }
-        names = cdr(names);
+        STORE(ic->g, NULL, names, cdr(names));
     }
 
-    new_name = (char *)ic_xmalloc(ic, len, mark_cstring);
+    char *new_name = (char *)ic_xmalloc(ic, len, mark_cstring);
+    protect_ptr(ic->g, (void **) &new_name);
 
-    strncpy(new_name, namestr, len);
-    symbol = cname->u.name.symbol;
-    name = mk_name(ic, symbol, new_name, 0, len);
-    STORE(ic->g, symbol, symbol->names,
-          cons(ic, name, symbol->names));
+    strncpy(new_name, namestr+offset, len);
 
+    struct symbol *symbol = cname->u.name.symbol;
+    protect_ptr(ic->g, (void **) &symbol);
+
+    sexpr *name = mk_name(ic, symbol, new_name, 0, len);
+    protect_ptr(ic->g, (void **) &name);
+
+    sexpr *namelist = cons(ic, name, symbol->names);
+    protect_ptr(ic->g, (void **) &namelist);
+    STORE(ic->g, symbol, symbol->names, namelist);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return name;
 }
 
@@ -131,26 +164,33 @@ static unsigned long djb2_hash(const char *str, int count) {
    list.
  */
   
-sexpr *intern_len(IC *ic, const char *namehead, const char *namestr, unsigned int len) {
-    unsigned long hash = djb2_hash(namestr, len) % NAME_TABLE_HASH_BUCKETS;
-    sexpr *names = ic->name_table[hash];
-    sexpr *name;
-    sexpr *ret;
-
+sexpr *intern_len_gc(IC *ic, const char *namehead, unsigned int offset, unsigned int len) {
     protect_ptr(ic->g, (void **) &namehead);
+
+    unsigned long hash = djb2_hash(namehead+offset, len) % NAME_TABLE_HASH_BUCKETS;
+    sexpr *names = ic->name_table[hash];
+    protect_ptr(ic->g, (void **) &names);
 
     while(!is_nil(ic, names)) {
         if(car(names)->t == NAME &&
            car(names)->u.name.length == len &&
-           !strncasecmp(namestr, car(names)->u.name.head+car(names)->u.name.start, len)) {
-            ret = find_or_create_name(ic, car(names), namestr, len);
+           !strncasecmp(namehead+offset,
+                        car(names)->u.name.head+car(names)->u.name.start,
+                        len)) {
+            sexpr *ret = find_or_create_name(ic,
+                                             car(names),
+                                             namehead,
+                                             offset,
+                                             len);
+            unprotect_ptr(ic->g);
             unprotect_ptr(ic->g);
             return ret;
         }
-        names = cdr(names);
+        STORE(ic->g, NULL, names, cdr(names));
     }
 
-    name = new_name(ic, namehead, namestr, len);
+    sexpr *name = new_name_gc(ic, namehead, offset, len);
+    protect_ptr(ic->g, (void **) &name);
 
     /* This strange way of making a pair is necessary because 
        ic->name_table can be changed by the garbage collector
@@ -161,19 +201,189 @@ sexpr *intern_len(IC *ic, const char *namehead, const char *namestr, unsigned in
     STORE(ic->g, pair, cdr(pair), ic->name_table[hash]);
     STORE(ic->g, NULL, ic->name_table[hash], pair);
 
-    ret = name;
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return name;
+}
+
+/* Do not protect the namehead for static versions. */
+sexpr *intern_len_static(IC *ic, const char *namehead, unsigned int offset, unsigned int len) {
+    char *tmp = (char *)ic_xmalloc(ic, len, mark_cstring);
+    protect_ptr(ic->g, (void **) &tmp);
+
+    strncpy(tmp, namehead+offset, len);
+
+    sexpr *ret = intern_len_gc(ic, tmp, 0, len);
     unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Wrapper function for calling intern_len when we have a null terminated
-   C string. */
+   C string.
+   The weird malloc() trick is so this will work equally well with
+   a garbage collected or a static argument. */
 sexpr *intern(IC *ic, const char *namestr) {
     int len = strlen(namestr);
+    char *s = (char *)malloc(len);
+    if(s == NULL) {
+        fprintf(stderr, "Out of memory!\n");
+        exit(EXIT_FAILURE);
+    }
 
-    return intern_len(ic, NULL, namestr, len);
+    strncpy(s, namestr, len);
+    sexpr *ret = intern_len_static(ic, s, 0, len);
+    free(s);
+    return ret;
 }
 
+
+/* Destructively adds an sexpr to the end of a list.
+   tail is the address of a pointer that points to the last element
+   in the list.
+   value is the value that will be placed into the car() of a new
+   CONS at the end of the list. */
+/* Assume that *tail is already protected. */
+void push_back(IC *ic, sexpr **tail, sexpr *value) {
+    protect_ptr(ic->g, (void **) &value);
+
+    sexpr *new_tail = cons(ic, value, ic->g_nil);
+
+    STORE(ic->g, *tail, cdr(*tail), new_tail);
+    STORE(ic->g, NULL, *tail, new_tail);
+
+    unprotect_ptr(ic->g);
+}
+
+/* Called with a bunch of sexpr * arguments, returns a list containing them.
+   The arguments must be terminated with a NULL, like execl().
+   We need to save the arguments in proteced pointers in case they
+   get moved by a garbage collection.  We allocate these pointers with
+   malloc/free to avoid triggering a GC.
+   
+   First we figure out how many arguments we have,
+   then we allocate storage for them,
+   then we copy them and protect the pointers to them,
+   then we create the list,
+   then we unprotect/free things,
+   then we return the result. */
+sexpr *listl(IC *ic, ...) {
+    unsigned int argcount = 0;
+    va_list ap;
+
+    /* Figure out how many arguments we have */
+    va_start(ap, ic);
+    while((va_arg(ap, sexpr *)) != NULL)
+        argcount++;
+    va_end(ap);
+
+    /* Allocate pointers that can be protected */
+    sexpr **args = (sexpr **)malloc(sizeof(sexpr *)*argcount);
+    if(args == NULL) {
+        fprintf(stderr, "Out of memory!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Copy args into pointers, and protect pointers */
+    va_start(ap, ic);
+    for(unsigned int arg = 0; arg < argcount; arg++) {
+        args[arg] = va_arg(ap, sexpr *);
+        protect_ptr(ic->g, (void **)&args[arg]);
+    }
+    va_end(ap);
+
+    /* Create list head */
+    sexpr *ret = cons(ic, ic->g_nil, ic->g_nil);
+    protect_ptr(ic->g, (void **)&ret);
+    sexpr *tail = ret;
+    protect_ptr(ic->g, (void **)&tail);
+
+    /* Push args onto list */
+    for(unsigned int arg = 0; arg < argcount; arg++) {
+        push_back(ic, &tail, args[arg]);
+    }
+
+
+    /* Unprotect/free things */
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    free(args);
+
+    for(unsigned int arg = 0; arg < argcount; arg++)
+        unprotect_ptr(ic->g);
+
+    /* Return list, minus list head */
+    return cdr(ret);
+}
+
+/* Like listl(), but terminates the list with tail, instead of nil. */
+sexpr *listl_prepend(IC *ic, sexpr *tail, ...) {
+    protect_ptr(ic->g, (void **)&tail);
+
+    sexpr *ret = tail;
+    protect_ptr(ic->g, (void **)&ret);
+    
+    unsigned int argcount = 0;
+    va_list ap;
+
+    /* Figure out how many arguments we have */
+    va_start(ap, tail);
+    while((va_arg(ap, sexpr *)) != NULL)
+        argcount++;
+    va_end(ap);
+
+    /* Allocate pointers that can be protected */
+    sexpr **args = (sexpr **)malloc(sizeof(sexpr *)*argcount);
+    if(args == NULL) {
+        fprintf(stderr, "Out of memory!\n");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Copy args into pointers, and protect pointers */
+    va_start(ap, tail);
+    for(unsigned int arg = 0; arg < argcount; arg++) {
+        args[arg] = va_arg(ap, sexpr *);
+        protect_ptr(ic->g, (void **)&args[arg]);
+    }
+    va_end(ap);
+
+    /* Push args onto list */
+    for(int arg = argcount - 1; arg >= 0; arg--) {
+        STORE(ic->g, NULL, ret, cons(ic, args[arg], ret));
+    }
+
+    /* Unprotect/free things */
+    free(args);
+
+    for(unsigned int arg = 0; arg < argcount; arg++)
+        unprotect_ptr(ic->g);
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return ret;
+}
+
+sexpr *copylist(IC *ic, sexpr *l) {
+    protect_ptr(ic->g, (void **)&l);
+
+    sexpr *ret = cons(ic, ic->g_nil, ic->g_nil);
+    protect_ptr(ic->g, (void **)&ret);
+    sexpr *tail = ret;
+    protect_ptr(ic->g, (void **)&tail);
+
+    while(!is_nil(ic, l)) {
+        push_back(ic, &tail, car(l));
+        STORE(ic->g, NULL, l, cdr(l));
+    }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return cdr(ret);
+}
 
 /* Frames and Bindings
 
@@ -205,24 +415,26 @@ sexpr *intern(IC *ic, const char *namestr) {
    a word and the cdr if the cell is a value.
  */
 sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
-    sexpr *ret = ic->g_nil;  /* ret will be returned */
-    sexpr **tail = &ret;     /* tail will destructively modify either ret
-                                or the last cons cell in the list built
-                                up so far. */
-    sexpr *linking_object = NULL;
+    protect_ptr(ic->g, (void **)&args);
+    protect_ptr(ic->g, (void **)&ending);
+    
+    sexpr *head = cons(ic, ic->g_nil, ic->g_nil);
+    protect_ptr(ic->g, (void **)&head);
 
-    protect_ptr(ic->g, (void **)&ret);
+    sexpr *tail = head;
+    protect_ptr(ic->g, (void **)&tail);
+
+    sexpr *name = NULL;
+    protect_ptr(ic->g, (void **)&name);
 
     while((*paramsp)->t == CONS &&
           (is_nil(ic, args) || args->t == CONS)) {
-        sexpr *name;
-
         if(car(*paramsp)->t == CONS) {
             /* We have [<word>] or [<word> <expr>] */
-            name = car(car(*paramsp));
+            STORE(ic->g, NULL, name, car(car(*paramsp)));
         } else {
             /* We have <word> */
-            name = car(*paramsp);
+            STORE(ic->g, NULL, name, car(*paramsp));
         }
 
         if(car(*paramsp)->t == CONS &&
@@ -234,18 +446,13 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
                cell in the list. */
             sexpr *binding = unsafe_cons(ic, name, args);
             protect_ptr(ic->g, (void **) &binding);
-            STORE(ic->g,
-                  linking_object,
-                  *tail,
-                  unsafe_cons(ic, binding, ic->g_nil));
+            push_back(ic, &tail, binding);
             unprotect_ptr(ic->g);
-            linking_object = *tail;
-            tail = &(cdr(*tail));
             STORE(ic->g, NULL, *paramsp, cdr(*paramsp));
             /* Set args to nil to terminate argument processing.
                We've bound everything to a rest argument, so there's
                nothing else to do. */
-            args = ic->g_nil;
+            STORE(ic->g, NULL, args, ic->g_nil);
         } else if(args->t == CONS) {
             /* We have a name, and a value to bind to it, so let's do it.
                Same destructive modification of tail, and updating of
@@ -253,26 +460,25 @@ sexpr *mk_bindings(IC *ic, sexpr **paramsp, sexpr *args, sexpr *ending) {
                list. */
             sexpr *binding = unsafe_cons(ic, name,  car(args));
             protect_ptr(ic->g, (void **) &binding);
-            STORE(ic->g,
-                  linking_object,
-                  *tail,
-                  unsafe_cons(ic, binding, ic->g_nil));
+            push_back(ic, &tail, binding);
             unprotect_ptr(ic->g);
-            linking_object = *tail;
-            tail = &(cdr(*tail));
             STORE(ic->g, NULL, *paramsp, cdr(*paramsp));
-            args = cdr(args);
+            STORE(ic->g, NULL, args, cdr(args));
         } else {
             break;
         }
     }
 
     /* Tack on the ending. */
-    STORE(ic->g, linking_object, *tail, ending);
+    STORE(ic->g, tail, cdr(tail), ending);
 
-    /* This undoes the protect_ptr above. */
     unprotect_ptr(ic->g);
-    return ret;
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return cdr(head);
 }
 
 
@@ -321,29 +527,11 @@ frame *mk_frame(IC *ic, frame *parent,
     return f;
 }
 
-/* Swaps the values stored in a frame with the values stored in the
-   symbols referenced in the frame.  This same function is used both
-   for entering a frame and for leaving it.  It is its own inverse.
- */
-void do_swap(IC *ic, frame *f) {
-    sexpr *bindings = f->bindings;
-
-    while(!is_nil(ic, bindings)) {
-        sexpr *binding = car(bindings);
-
-        sexpr *name = car(binding);
-        sexpr *tmp  = cdr(binding);
-        STORE(ic->g, binding,
-              cdr(binding), name->u.name.symbol->value);
-        STORE(ic->g, name->u.name.symbol,
-              name->u.name.symbol->value, tmp);
-        bindings = cdr(bindings);
-    }
-}
-
 /* Is the name s in the list l?
    This is tricky because l came from an argument list, so
    the car may be a cons cell if it is an optional or rest argument.
+   No need to protect anything since no memory is allocated and no
+   garbage collections can happen during this procedure.
  */
 int name_member(IC *ic, sexpr *s, sexpr *l) {
     for(; !is_nil(ic, l) && l->t == CONS; l = cdr(l)) {
@@ -372,19 +560,41 @@ int name_member(IC *ic, sexpr *s, sexpr *l) {
    not remove anything.
  */
 sexpr *remove_bindings(IC *ic, sexpr *names, sexpr *bindings) {
-    sexpr *subcall_result;
+    protect_ptr(ic->g, (void **) &names);
+    protect_ptr(ic->g, (void **) &bindings);
 
-    if(is_nil(ic, bindings))
-        return ic->g_nil;
-    else if(name_member(ic, car(car(bindings)), names))
-        return remove_bindings(ic, names, cdr(bindings));
+    sexpr *ret = NULL;
+    protect_ptr(ic->g, (void **) &ret);
 
-    subcall_result = remove_bindings(ic, names, cdr(bindings));
+    sexpr *subcall_result = NULL;
+    protect_ptr(ic->g, (void **) &subcall_result);
 
-    if(subcall_result == cdr(bindings))
-        return bindings;
-    else
-        return cons(ic, car(bindings), subcall_result);
+    if(is_nil(ic, bindings)) {
+        STORE(ic->g, NULL, ret, ic->g_nil);
+        goto end;
+    } else if(name_member(ic, car(car(bindings)), names)) {
+        STORE(ic->g, NULL, ret, remove_bindings(ic, names, cdr(bindings)));
+        goto end;
+    }
+
+    STORE(ic->g, NULL, subcall_result, remove_bindings(ic, names, cdr(bindings)));
+
+    if(subcall_result == cdr(bindings)) {
+        STORE(ic->g, NULL, ret, bindings);
+        goto end;
+    } else {
+        STORE(ic->g, NULL, ret, cons(ic, car(bindings), subcall_result));
+        goto end;
+    }
+
+    end:
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    return ret;
 }
 
 /* Extend creates a copy of frame f extended with bindings from formalsp
@@ -399,16 +609,22 @@ frame *extend(IC *ic, frame *f, sexpr **formalsp, sexpr *values,
               int allowed_results,
               struct continuation *parent_continuation,
               int parent_allowed_results) {
+    protect_ptr(ic->g, (void **)&f);
+    protect_ptr(ic->g, (void **)&values);
+    protect_ptr(ic->g, (void **)&procedure);
+    protect_ptr(ic->g, (void **)&output_error_info);
+    protect_ptr(ic->g, (void **)&continuation);
+    protect_ptr(ic->g, (void **)&parent_continuation);
+
     sexpr *filtered_bindings = remove_bindings(ic, *formalsp, f->bindings);
-    /* This protect_ptr() is necessary because mk_bindings() does not
-        protect its arguments. */
     protect_ptr(ic->g, (void **)&filtered_bindings);
+
+    sexpr *new_bindings = mk_bindings(ic, formalsp, values, filtered_bindings);
+    protect_ptr(ic->g, (void **)&new_bindings);
+
     frame *ret = mk_frame(ic,
                           f->parent,
-                          mk_bindings(ic,
-                                      formalsp,
-                                      values,
-                                      filtered_bindings),
+                          new_bindings,
                           procedure,
                           output_error_info,
                           continuation,
@@ -416,33 +632,52 @@ frame *extend(IC *ic, frame *f, sexpr **formalsp, sexpr *values,
                           parent_continuation,
                           parent_allowed_results);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* add_local adds a local, unbound binding to the frame f by destructively
    modifying the frame.  All other frame members stay the same. */
 void add_local(IC *ic, frame *f, sexpr *name) {
+    protect_ptr(ic->g, (void **)&f);
+    protect_ptr(ic->g, (void **)&name);
 
     /* If name is already a local variable in the frame, do nothing. */
-    if(name_member(ic, name, f->bindings))
+    if(name_member(ic, name, f->bindings)) {
+        unprotect_ptr(ic->g);
+        unprotect_ptr(ic->g);
         return;
+    }
     
     /* Must reroot to the frame before manipulating it. */
     reroot(ic, f);
 
     /* Store the current value of name. */
+    sexpr *binding = cons(ic, name, name->u.name.symbol->value);
+    protect_ptr(ic->g, (void **)&binding);
+
+    sexpr *newbindings = cons(ic, binding, f->bindings);
+    protect_ptr(ic->g, (void **)&newbindings);
     STORE(ic->g,
           f,
           f->bindings,
-          cons(ic, cons(ic, name,
-                            name->u.name.symbol->value),
-                   f->bindings));
+          newbindings);
+    unprotect_ptr(ic->g);
                    
     /* Set the value to unbound. */
     STORE(ic->g,
           name->u.name.symbol,
           name->u.name.symbol->value,
           ic->g_unbound);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 /* reroot changes the current active frame to frame f.
@@ -459,6 +694,7 @@ void add_local(IC *ic, frame *f, sexpr *name) {
    Then, bindings are swapped during the trip down the tree to the new
    root.
  */
+#if 0
 void reroot(IC *ic, frame *f) {
     frame *newf = NULL;
     frame *old = f;
@@ -498,6 +734,7 @@ void reroot(IC *ic, frame *f) {
         newf = newf->to_active;
     }
 }
+#endif
 
 
 
@@ -573,17 +810,25 @@ char *get_cstring(IC *ic, sexpr *e) {
 
 /* Convert the argument into a name. */
 sexpr *to_name(IC *ic, sexpr *e) {
+    protect_ptr(ic->g, (void **) &e);
+    char *buf = NULL;
+    protect_ptr(ic->g, (void **) &buf);
+    sexpr *ret;
     int len;
-    char *buf;
 
     switch(e->t) {
         case NAME:
+            unprotect_ptr(ic->g);
+            unprotect_ptr(ic->g);
             return e;
         case NUMBER:
             len = snprintf(NULL, 0, "%g", e->u.number.value);
-            buf = (char *)ic_xmalloc(ic, len+1, mark_cstring);
+            STORE(ic->g, NULL, buf, ic_xmalloc(ic, len+1, mark_cstring));
             len = snprintf(buf, len+1, "%g", e->u.number.value);
-            return intern_len(ic, buf, buf, len);
+            ret = intern_len_gc(ic, buf, 0, len);
+            unprotect_ptr(ic->g);
+            unprotect_ptr(ic->g);
+            return ret;
         default:
             bad_argument(ic, e);
     }
@@ -596,6 +841,8 @@ sexpr *to_number(IC *ic, sexpr *e) {
 
     switch(e->t) {
         case NAME:
+            /* No protection because e is not used after get_cstring() 
+               and s is not used after mk_number(). */
             s = get_cstring(ic, e);
             if(strcasecmp(s, "inf") &&
                strcasecmp(s, "infinity") &&
@@ -612,130 +859,179 @@ sexpr *to_number(IC *ic, sexpr *e) {
     }
 }
 
-/* Used by the propertly list handling functions below.
-   Returns the pointer to the pointer to the portion of the property
-   list for "name" starting with "prop".  Returns nil if prop is not on
-   the property list.
+/* pnext() and psetnext() will fetch and set the "next" property
+   list pointer for an object.
+   If passedd a NAME, they deal with the appropriate symbol's properties
+   pointer.
+   If passed a CONS, they deal with the cdr.
+   No protection because there is no allocation. */
+static sexpr *pnext(IC *ic, sexpr *thing) {
+    switch(thing->t) {
+        case CONS:
+            return thing->u.cons.cdr;
+        case NAME:
+            return thing->u.name.symbol->properties;
+        default:
+            bad_argument(ic, thing);
+    }
+}
 
-   linker is an optional void ** points to the beginning of the object
-   that the return value points into.  Only needed if the object will
-   be modified, like in remprop().
+static void psetnext(IC *ic, sexpr *thing, sexpr *newnext) {
+    switch(thing->t) {
+        case CONS:
+            STORE(ic->g, thing, thing->u.cons.cdr, newnext);
+            break;
+        case NAME:
+            STORE(ic->g,
+                  thing->u.name.symbol,
+                  thing->u.name.symbol->properties,
+                  newnext);
+            break;
+        default:
+            bad_argument(ic, thing);
+    }
+}
+
+/* Used by the propertly list handling functions below.
+   Returns the cons cell before the one referring to the property,
+   or the name object if the property is first on the list.
+
+   Returns nil if the name is not on the list.
  */
 
-static sexpr **findprop(IC *ic, sexpr *name, sexpr *prop, void **linker) {
-    void *linking_object = to_name(ic, name)->u.name.symbol;
-    sexpr **pl = &((symbol *)linking_object)->properties;
+static sexpr *findprop(IC *ic, sexpr *name, sexpr *prop) {
+    protect_ptr(ic->g, (void **) &name);
+    protect_ptr(ic->g, (void **) &prop);
+    sexpr *current = name;
+    protect_ptr(ic->g, (void **) &current);
+    sexpr *next = pnext(ic, current);
+    protect_ptr(ic->g, (void **) &next);
 
-    while(!is_nil(ic, *pl)) {
-        if(car(*pl) == prop ||
+    sexpr *ret = ic->g_nil;
+    protect_ptr(ic->g, (void **) &ret);
+
+    while(!is_nil(ic, next)) {
+        if(car(next) == prop ||
            (name_eq(ic->n_caseignoredp->u.name.symbol->value, ic->n_true) &&
-            name_eq(car(*pl), prop))) {
-            if(linker != NULL)
-                *linker = linking_object;
-            return pl;
+            name_eq(car(next), prop))) {
+            STORE(ic->g, NULL, ret, current);
+            break;
         }
-        /* Property list items are in pairs, so we skip over two
-           members here.  *pl is the first cons of the pair.
-           cdr(*pl) is the second cons of the pair, and contains
-           the pointer to the next pair (or nil).
-           This pointer is located at &(cdr(cdr(*pl))), the 
-           address of the cdr pointer within cdr(*pl). */
-        linking_object = cdr(*pl);
-        pl = &(cdr(cdr(*pl)));
+        STORE(ic->g, NULL, current, cdr(next));
+        STORE(ic->g, NULL, next, cdr(current));
     }
 
-    if(linker != NULL)
-        *linker = linking_object;
-    return pl;
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
+
 }
 
 void pprop(IC *ic, sexpr *name, sexpr *prop, sexpr *value) {
-    sexpr **pl_tail;
+    protect_ptr(ic->g, (void **) &name);
+    protect_ptr(ic->g, (void **) &prop);
+    protect_ptr(ic->g, (void **) &value);
 
     /* Make sure that name and prop are NAME's or can be
        turned into NAME's (numbers). */
-    protect_ptr(ic->g, (void **) &name);
-    protect_ptr(ic->g, (void **) &prop);
-    name = to_name(ic, name);
-    prop = to_name(ic, prop);
+    STORE(ic->g, NULL, name, to_name(ic, name));
+    STORE(ic->g, NULL, prop, to_name(ic, prop));
 
-    pl_tail = findprop(ic, name, prop, NULL);
-    if(is_nil(ic, *pl_tail)) {
+    sexpr *prev = findprop(ic, name, prop);
+    protect_ptr(ic->g, (void **) &prev);
+    
+    if(is_nil(ic, prev)) {
         /* prop is not on the plist for name.  Add it at the
            beginning. */
+        sexpr *new_plist = listl_prepend(ic, name->u.name.symbol->properties,
+                                             prop,
+                                             value,
+                                             NULL);
+        protect_ptr(ic->g, (void **) &new_plist);
         STORE(ic->g, name->u.name.symbol,
               name->u.name.symbol->properties,
-              cons(ic, prop, cons(ic, value, name->u.name.symbol->properties)));
+              new_plist);
+        unprotect_ptr(ic->g);
     } else {
         /* prop is on the plist for name.  Destructively modify
            the cons cell after the current one to point to value. */
-        STORE(ic->g, cdr(*pl_tail), car(cdr(*pl_tail)), value);
+        sexpr *valcons = cdr(pnext(ic, prev));
+        protect_ptr(ic->g, (void **) &valcons);
+        STORE(ic->g, valcons, car(valcons), value);
+        unprotect_ptr(ic->g);
     }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 }
 
-sexpr *gprop(IC *ic, sexpr *name, sexpr *prop) {
-    sexpr **pl_tail;
-    /* Make sure that name and prop are NAME's or can be
-       turned into NAME's (numbers). */
+sexpr * gprop(IC *ic, sexpr *name, sexpr *prop) {
     protect_ptr(ic->g, (void **) &name);
     protect_ptr(ic->g, (void **) &prop);
-    name = to_name(ic, name);
-    prop = to_name(ic, prop);
 
-    pl_tail = findprop(ic, name, prop, NULL);
+    /* Make sure that name and prop are NAME's or can be
+       turned into NAME's (numbers). */
+    STORE(ic->g, NULL, name, to_name(ic, name));
+    STORE(ic->g, NULL, prop, to_name(ic, prop));
+
+    sexpr *prev = findprop(ic, name, prop);
+    protect_ptr(ic->g, (void **) &prev);
+
+    sexpr *ret = ic->g_nil;
+    protect_ptr(ic->g, (void **) &ret);
+    
+    if(!is_nil(ic, prev)) {
+        STORE(ic->g, NULL, ret, car(cdr(pnext(ic, prev))));
+    }
+
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
-    if(is_nil(ic, *pl_tail))
-        return ic->g_nil;
-    else
-        return car(cdr(*pl_tail));
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 void remprop(IC *ic, sexpr *name, sexpr *prop) {
-    void *linker;
-    sexpr **pl_tail;
-    /* Make sure that name and prop are NAME's or can be
-       turned into NAME's (numbers). */
     protect_ptr(ic->g, (void **) &name);
     protect_ptr(ic->g, (void **) &prop);
-    name = to_name(ic, name);
-    prop = to_name(ic, prop);
 
-    pl_tail = findprop(ic, name, prop, &linker);
-    if(is_nil(ic, *pl_tail)) {
+    /* Make sure that name and prop are NAME's or can be
+       turned into NAME's (numbers). */
+    STORE(ic->g, NULL, name, to_name(ic, name));
+    STORE(ic->g, NULL, prop, to_name(ic, prop));
+
+    sexpr *prev = findprop(ic, name, prop);
+    protect_ptr(ic->g, (void **) &prev);
+
+    if(is_nil(ic, prev)) {
         eprint_sexpr(ic, name);
         eprintf(ic, " has no property named ");
         eprint_sexpr(ic, prop);
         throw_error(ic, ic->continuation->line);
-    } else {
-        /* Need two cdr's because we are removing two items from the
-           property list. */
-        STORE(ic->g, linker, *pl_tail, cdr(cdr(*pl_tail)));
     }
+
+    psetnext(ic, prev, cdr(cdr(pnext(ic, prev))));
+
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
 }
 
-/* Helper function for returning a copy of the plist.
-   Because we return a copy here, it is safe to mutate
+/* Because we return a copy here, it is safe to mutate
    above because the only way the plist is ever accessed is through
    the pointer inside the symbol.
  */
-static sexpr *plist_helper(IC *ic, sexpr *l) {
-    if(is_nil(ic, l))
-        return ic->g_nil;
-    else
-        return cons(ic, car(l), plist_helper(ic, cdr(l)));
-}
-
 sexpr *plist(IC *ic, sexpr *name) {
     sexpr *ret = NULL;
     protect_ptr(ic->g, (void **) &name);
     name = to_name(ic, name);
 
-    ret = plist_helper(ic, name->u.name.symbol->properties);
+    ret = copylist(ic, name->u.name.symbol->properties);
     unprotect_ptr(ic->g);
     return ret;
 }
@@ -768,10 +1064,12 @@ struct symbol *mk_symbol(IC *ic,
   struct symbol *ret;
   protect_ptr(ic->g, (void **) &value);
   protect_ptr(ic->g, (void **) &function);
+  protect_ptr(ic->g, (void **) &function_source);
   protect_ptr(ic->g, (void **) &properties);
   protect_ptr(ic->g, (void **) &canonical_name);
   protect_ptr(ic->g, (void **) &names);
   ret = (struct symbol *)ic_xmalloc(ic, sizeof(struct symbol), mark_symbol);
+  unprotect_ptr(ic->g);
   unprotect_ptr(ic->g);
   unprotect_ptr(ic->g);
   unprotect_ptr(ic->g);
@@ -829,19 +1127,25 @@ static int list_length(IC *ic, sexpr *l) {
 /* Convert a list to an array.  Used by LISTTOARRAY and by the reader
    to process { ... } syntax. */
 sexpr *list_to_array(IC *ic, sexpr *l, int origin) {
+    protect_ptr(ic->g, (void **) &l);
+
     int i;
     int length = list_length(ic, l);
     sexpr *a = array(ic, length, origin);
+    protect_ptr(ic->g, (void **) &a);
 
-    for(i = 0; !is_nil(ic, l); i++, l = cdr(l))
+    for(i = 0; !is_nil(ic, l); i++, STORE(ic->g, NULL, l, cdr(l)))
         STORE(ic->g, a->u.array.members,
                      a->u.array.members[i],
                      car(l));
 
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return a;
 }
 
 /* Is e a number or a name that can be converted into a number? */
+/* No need for protection because e is unused after get_cstring() */
 int numberp(IC *ic, sexpr *e) {
     char *str, *unparsed;
 

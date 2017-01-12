@@ -27,8 +27,9 @@
 #include <math.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include "io.h"
+#include "list_memory.h"
 #include "byte_buffer.h"
+#include "io.h"
 #include "reader.h"
 #include "logoreader.h"
 #include "wxui.h"
@@ -50,6 +51,8 @@
    printf) for stashing error messages in ic->error_byte_buffer and
    used when printing into a word */
 void vbbprintf(IC *ic, byte_buffer *bb, const char *format, va_list ap) {
+    protect_ptr(ic->g, (void **)&bb);
+
     va_list ap_copy;
     int i, len;
     char *buf;
@@ -74,13 +77,21 @@ void vbbprintf(IC *ic, byte_buffer *bb, const char *format, va_list ap) {
            of characters printed (excluding the null byte used to end
            output to strings).
      */
-    buf = (char *)ic_xmalloc(ic, len+1, mark_cstring);
+    buf = (char *)malloc((len+1)*sizeof(char));
+    if(buf == NULL) {
+        fprintf(stderr, "Out of memory!\n");
+        exit(EXIT_FAILURE);
+    }
+
     vsnprintf(buf, len+1, format, ap);
 
     /* Add the contents of the buffer to the byte_buffer. */
     for(i = 0; i < len; i++) {
         add_to_byte_buffer(ic, bb, buf[i]);
     }
+
+    free(buf);
+    unprotect_ptr(ic->g);
 }
 
 /* A pointer to wx_vprintf() will be stored in ic->output_printer
@@ -108,10 +119,17 @@ void wx_vprintf(IC *ic, const char *format, va_list ap) {
        Add 1 because the return count does not include the null bye
        at the end of the string.
      */
-    buf = (char *)ic_xmalloc(ic, len+1, mark_cstring);
+    buf = (char *)malloc((len+1)*sizeof(char));
+    if(buf == NULL) {
+        fprintf(stderr, "Out of memory!\n");
+        exit(EXIT_FAILURE);
+    }
+
     vsnprintf(buf, len+1, format, ap);
 
     wxString s(buf);
+    free(buf);
+
     wxCommandEvent *printevent = new wxCommandEvent(PRINT_TEXT);
     printevent->SetString(s);
     wxTheApp->QueueEvent(printevent);
@@ -156,9 +174,10 @@ void vtprintf(IC *ic, const char *format, va_list ap) {
    If it is a BYTE_BUFFERP, then we print to the byte_buffer.
  */
 void vdestprintf(IC *ic, sexpr *dest, const char *format, va_list ap) {
-    if(dest->t == FILEP)
+    if(dest->t == FILEP) {
         vfprintf(dest->u.filep.file, format, ap);
-    else if(dest->t == BYTE_BUFFERP)
+        fflush(dest->u.filep.file);
+    } else if(dest->t == BYTE_BUFFERP)
         vbbprintf(ic, dest->u.byte_bufferp.bb, format, ap);
     else {
         fprintf(stderr, "Invalid argument to vdestprintf");
@@ -222,6 +241,8 @@ __attribute__ ((format (printf, 2, 3)))
    tprintf, lprintf, or eprintf.
  */
 static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
+    protect_ptr(ic->g, (void **)&e);
+
     int fullprint = 0;
 
     /* FULLPRINTP controls whether we will escape delimiters in the
@@ -324,7 +345,7 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
                has its own data type, different from a CONS. */
             printer(ic, "[");
             io_print_sexpr(ic, printer, car(e));
-            e = cdr(e);
+            STORE(ic->g, NULL, e, cdr(e));
             while(!is_nil(ic, e)) {
               if(e->t != CONS) {
                   printer(ic, " . ");
@@ -333,7 +354,7 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
               }
               printer(ic, " ");
               io_print_sexpr(ic, printer, car(e));
-              e = cdr(e);
+              STORE(ic->g, NULL, e, cdr(e));
             }
             printer(ic, "]");
             break;
@@ -388,6 +409,8 @@ static void io_print_sexpr(IC *ic, printerf printer, sexpr *e) {
             printer(ic, "#<Invalid type %p>\n", e);
             break;
     }
+
+    unprotect_ptr(ic->g);
 }
 
 
@@ -412,20 +435,36 @@ void eprint_sexpr(IC *ic, sexpr *e) {
    nil if not.
  */
 static sexpr *findfile(IC *ic, sexpr *name) {
+    protect_ptr(ic->g, (void **) &name);
+
     sexpr *l = ic->open_files;
+    protect_ptr(ic->g, (void **) &l);
+
+    sexpr *ret = ic->g_nil;
+    protect_ptr(ic->g, (void **) &ret);
 
     while(l->t == CONS) {
         /* Check for object equality so we can find matching lists
            used for printing to a name. */
-        if(name == car(car(l)))
-            return cdr(car(l));
+        if(name == car(car(l))) {
+            STORE(ic->g, NULL, ret, cdr(car(l)));
+            goto end;
+        }
 
         /* Check for name equality for normal file operations. */
-        if(name_eq(name, car(car(l))))
-            return cdr(car(l));
-        l = cdr(l);
+        if(name_eq(name, car(car(l)))) {
+            STORE(ic->g, NULL, ret, cdr(car(l)));
+            goto end;
+        }
+        STORE(ic->g, NULL, l, cdr(l));
     }
-    return ic->g_nil;
+
+
+    end:
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 
 /* Opens the file pointed to by "path" in the mode pointed to by "mode".
@@ -434,8 +473,9 @@ static sexpr *findfile(IC *ic, sexpr *name) {
    list.
  */
 static void lopen(IC *ic, sexpr *path, const char *mode) {
+    protect_ptr(ic->g, (void **)&path);
     sexpr *file = findfile(ic, path); /* Check for file already open. */
-    char *path_cs;
+    protect_ptr(ic->g, (void **)&file);
     FILE *fp;
     
     if(!is_nil(ic, file)) {
@@ -446,7 +486,9 @@ static void lopen(IC *ic, sexpr *path, const char *mode) {
         throw_error(ic, ic->continuation->line);
     }
 
-    path_cs = get_cstring(ic, path);
+    char *path_cs = get_cstring(ic, path);
+    protect_ptr(ic->g, (void **)&path_cs);
+
     if(path_cs == NULL)
         bad_argument(ic, path);
 
@@ -457,18 +499,27 @@ static void lopen(IC *ic, sexpr *path, const char *mode) {
         throw_error(ic, ic->continuation->line);
     }
 
-    file = mk_filep(ic, fp);
+    STORE(ic->g, NULL, file, mk_filep(ic, fp));
 
     /* Add the path and file to the open file list. */
+    sexpr *pair = cons(ic, path, file);
+    protect_ptr(ic->g, (void **)&pair);
     STORE(ic->g, NULL,
           ic->open_files,
-          cons(ic, cons(ic, path, file),
-                   ic->open_files));
+          cons(ic, pair, ic->open_files));
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
 }
 
 void openread(IC *ic, sexpr *path)   { lopen(ic, path, "r"); }
 
 void openwrite(IC *ic, sexpr *path)  {
+    protect_ptr(ic->g, (void **)&path);
+
     if(path->t == CONS) {
         /* If a list is opened for writing, then the first element of
            the list is a name whose value will be set to another name
@@ -485,28 +536,31 @@ void openwrite(IC *ic, sexpr *path)  {
            Any data printed while the output is set to the list will be
            added to the byte_buffer, and the byte_buffer will be converted
            to a name when the output is closed. */
+        sexpr *output_bbp = mk_byte_bufferp(ic, mk_byte_buffer(ic));
+        protect_ptr(ic->g, (void **)&output_bbp);
+
+        sexpr *pair = cons(ic, path, output_bbp);
+        protect_ptr(ic->g, (void **)&pair);
+
         STORE(ic->g, NULL,
               ic->open_files,
-              cons(ic, cons(ic, path,
-                                mk_byte_bufferp(ic, mk_byte_buffer(ic))),
-                       ic->open_files));
+              cons(ic, pair, ic->open_files));
+
+        unprotect_ptr(ic->g);
+        unprotect_ptr(ic->g);
     } else if(path->t == NAME) {
         lopen(ic, path, "w");
     } else {
         bad_argument(ic, path);
     }
 
+    unprotect_ptr(ic->g);
 }
 
 void openappend(IC *ic, sexpr *path) { lopen(ic, path, "a"); }
 void openupdate(IC *ic, sexpr *path) { lopen(ic, path, "a+"); }
 
 void lclose(IC *ic, sexpr *path) {
-    /* We use a pointer to a pointer to make it easier to delete
-       the item from the linked list. */
-    sexpr *linking_object = NULL;
-    sexpr **l = &ic->open_files;
-
     /* If the destination we are closing is the current input or output
        then we need to set the current input or output back to the terminal.
      */
@@ -514,6 +568,13 @@ void lclose(IC *ic, sexpr *path) {
         setread(ic, ic->g_nil);
     if(path == ic->output_name || name_eq(path, ic->output_name))
         setwrite(ic, ic->g_nil);
+
+    /* We use a pointer to a pointer to make it easier to delete
+       the item from the linked list.
+       I think this is safe in this case if I am careful about
+       word_from_byte_buffer. */
+    sexpr *linking_object = NULL;
+    sexpr **l = &ic->open_files;
 
     while(!is_nil(ic, *l)) {
         if(car(car(*l))->t == NAME &&
@@ -545,12 +606,31 @@ void lclose(IC *ic, sexpr *path) {
                car(car(car(*l))) is the name to which we are printing.
                Its value will become a new name containing the output
                stored in the byte_buffer. */
+
+            /* Protect these from collection during word_from_byte_buffer */
             sexpr *name = car(car(car(*l)));
+            protect_ptr(ic->g, (void **)&name);
+
+            sexpr *bbp = cdr(car(*l));
+            protect_ptr(ic->g, (void **)&bbp);
+
+            /* Remove the pair from the open files list.
+               This needs to happen before word_from_byte_buffer()
+               so that garbage collection doesn't move linking_object. */
+            STORE(ic->g, linking_object, *l, cdr(*l));
+
+            sexpr *value =
+                word_from_byte_buffer(ic, bbp->u.byte_bufferp.bb);
+            protect_ptr(ic->g, (void **)&value);
+
             STORE(ic->g, name->u.name.symbol,
                   name->u.name.symbol->value,
-                  word_from_byte_buffer(ic, cdr(car(*l))->u.byte_bufferp.bb));
-            /* Remove the pair from the open files list. */
-            STORE(ic->g, linking_object, *l, cdr(*l));
+                  value);
+
+            unprotect_ptr(ic->g);
+            unprotect_ptr(ic->g);
+            unprotect_ptr(ic->g);
+
             return;
         }
         linking_object = *l;
@@ -580,25 +660,35 @@ sexpr *leofp(IC *ic) {
    file.
  */
 void dribble(IC *ic, sexpr *name) {
-    sexpr *filep;
+    protect_ptr(ic->g, (void **)&name);
+
+    sexpr *filep = NULL;
+    protect_ptr(ic->g, (void **)&filep);
 
     if(is_nil(ic, name)) {
         sexpr *old_name = ic->dribble_name;
+        protect_ptr(ic->g, (void **)&old_name);
+
         STORE(ic->g, NULL, ic->dribble, ic->g_nil);
         STORE(ic->g, NULL, ic->dribble_name, ic->g_nil);
         if(!is_nil(ic, old_name))
             lclose(ic, old_name);
-        return;
+
+        unprotect_ptr(ic->g);
+    } else {
+        STORE(ic->g, NULL, filep, findfile(ic, name));
+        if(is_nil(ic, filep)) {
+            lopen(ic, name, "a");
+            STORE(ic->g, NULL, filep, findfile(ic, name));
+        }
+
+        STORE(ic->g, NULL, ic->dribble, filep);
+        STORE(ic->g, NULL, ic->dribble_name, name);
     }
 
-    filep = findfile(ic, name);
-    if(is_nil(ic, filep)) {
-        lopen(ic, name, "a");
-        filep = findfile(ic, name);
-    }
 
-    STORE(ic->g, NULL, ic->dribble, filep);
-    STORE(ic->g, NULL, ic->dribble_name, name);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 
@@ -609,34 +699,41 @@ void nodribble(IC *ic) {
 
 /* Begin reading from file "name".  The file must already be open. */
 void setread(IC *ic, sexpr *name) {
-    sexpr *filep;
+    protect_ptr(ic->g, (void **)&name);
+
+    sexpr *filep = NULL;
+    protect_ptr(ic->g, (void **)&filep);
 
     if(is_nil(ic, name)) {
         STORE(ic->g, NULL, ic->input, mk_filep(ic, NULL));
         STORE(ic->g, NULL, ic->input_name, ic->g_nil);
         read_from_file(ic, NULL);
         logoread_from_file(ic->lr, NULL);
+    } else {
+        STORE(ic->g, NULL, filep, findfile(ic, name));
+        if(is_nil(ic, filep)) {
+            eprintf(ic, "File ");
+            eprint_sexpr(ic, name);
+            eprintf(ic, " is not open");
+            throw_error(ic, ic->continuation->line);
+        }
 
-        return;
+        STORE(ic->g, NULL, ic->input, filep);
+        STORE(ic->g, NULL, ic->input_name, name);
+        read_from_file(ic, filep->u.filep.file);
+        logoread_from_file(ic->lr, filep->u.filep.file);
     }
 
-    filep = findfile(ic, name);
-    if(is_nil(ic, filep)) {
-        eprintf(ic, "File ");
-        eprint_sexpr(ic, name);
-        eprintf(ic, " is not open");
-        throw_error(ic, ic->continuation->line);
-    }
-
-    STORE(ic->g, NULL, ic->input, filep);
-    STORE(ic->g, NULL, ic->input_name, name);
-    read_from_file(ic, filep->u.filep.file);
-    logoread_from_file(ic->lr, filep->u.filep.file);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 /* Begin writing to file "name".  The file must already be open. */
 void setwrite(IC *ic, sexpr *name) {
-    sexpr *filep;
+    protect_ptr(ic->g, (void **)&name);
+    
+    sexpr *filep = NULL;
+    protect_ptr(ic->g, (void **)&filep);
 
     if(is_nil(ic, name)) {
         /* Switch to writing to the user.
@@ -644,28 +741,45 @@ void setwrite(IC *ic, sexpr *name) {
            lprintf() calls vtprintf() if ic->output_name is nil. */
         STORE(ic->g, NULL, ic->output, mk_filep(ic, stdout));
         STORE(ic->g, NULL, ic->output_name, ic->g_nil);
-        return;
+    } else {
+        STORE(ic->g, NULL, filep, findfile(ic, name));
+        if(is_nil(ic, filep)) {
+            eprintf(ic, "File ");
+            eprint_sexpr(ic, name);
+            eprintf(ic, " is not open");
+            throw_error(ic, ic->continuation->line);
+        }
+
+        STORE(ic->g, NULL, ic->output, filep);
+        STORE(ic->g, NULL, ic->output_name, name);
     }
 
-    filep = findfile(ic, name);
-    if(is_nil(ic, filep)) {
-        eprintf(ic, "File ");
-        eprint_sexpr(ic, name);
-        eprintf(ic, " is not open");
-        throw_error(ic, ic->continuation->line);
-    }
-
-    STORE(ic->g, NULL, ic->output, filep);
-    STORE(ic->g, NULL, ic->output_name, name);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 /* Generate a list of all open files to be returned by allopen() below. */
 static sexpr *allopen_helper(IC *ic, sexpr *flist) {
-    if(is_nil(ic, flist))
-        return ic->g_nil;
-    else
-        return cons(ic, car(car(flist)),
-                        allopen_helper(ic, cdr(flist)));
+    protect_ptr(ic->g, (void **)&flist);
+
+    /* Create list head */
+    sexpr *ret = cons(ic, ic->g_nil, ic->g_nil);
+    protect_ptr(ic->g, (void **)&ret);
+    sexpr *tail = ret;
+    protect_ptr(ic->g, (void **)&tail);
+
+    /* Push file names onto list */
+	while(!is_nil(ic, flist)) {
+        push_back(ic, &tail, car(car(flist)));
+        STORE(ic->g, NULL, flist, cdr(flist));
+	}
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+
+    /* Return list, minus list head */
+    return cdr(ret);
 }
 
 /* Return a list of all open files. */
@@ -675,12 +789,12 @@ sexpr *allopen(IC *ic) {
 
 /* Close all open files. */
 void closeall(IC *ic) {
-    sexpr *s = allopen(ic), *l = s;
+    sexpr *l = allopen(ic);
+    protect_ptr(ic->g, (void **) &l);
 
-    protect_ptr(ic->g, (void **) &s);
     while(!is_nil(ic, l)) {
         lclose(ic, car(l));
-        l = cdr(l);
+        STORE(ic->g, NULL, l, cdr(l));
     }
     unprotect_ptr(ic->g);
 }
@@ -719,8 +833,9 @@ sexpr *writepos(IC *ic) {
 
 /* Set the current input position. */
 void setreadpos(IC *ic, sexpr *pos) {
+    long loc = truncl(to_number(ic, pos)->u.number.value);
     if(fseek(ic->input->u.filep.file,
-             truncl(to_number(ic, pos)->u.number.value),
+             loc,
              SEEK_SET)) {
         eprintf(ic, "Error seeking in file ");
         eprint_sexpr(ic, ic->input_name);
@@ -737,8 +852,10 @@ void setwritepos(IC *ic, sexpr *pos) {
         throw_error(ic, ic->continuation->line);
     }
 
+    long loc = truncl(to_number(ic, pos)->u.number.value);
+
     if(fseek(ic->output->u.filep.file,
-             truncl(to_number(ic, pos)->u.number.value),
+             loc,
              SEEK_SET)) {
         eprintf(ic, "Error seeking in file ");
         eprint_sexpr(ic, ic->output_name);
@@ -775,15 +892,19 @@ void mark_string_array(GC *g,
    the names in the argument.
  */
 char **mk_string_array(IC *ic, sexpr *names) {
-    int i, count;
+    protect_ptr(ic->g, (void **) &names);
+
     sexpr *np = names;
+    protect_ptr(ic->g, (void **) &np);
+
+    int i, count;
     char **ret;
     
     /* Count how many items we have. */
     count = 0;
     while(!is_nil(ic, np) && np->t == CONS) {
         count++;
-        np = cdr(np);
+        STORE(ic->g, NULL, np, cdr(np));
     }
     if(!is_nil(ic, np) || count == 0)
         bad_argument(ic, names);
@@ -803,14 +924,21 @@ char **mk_string_array(IC *ic, sexpr *names) {
     for(i = 0; i < count+1; i++)
         ret[i] = NULL;
 
-    np = names;
+    STORE(ic->g, NULL, np, names);
     i = 0;
     while(!is_nil(ic, np)) {
-        STORE(ic->g, ret, ret[i], get_cstring(ic, to_name(ic, car(np))));
+        char *str = get_cstring(ic, to_name(ic, car(np)));
+        protect_ptr(ic->g, (void **) &str);
+
+        STORE(ic->g, ret, ret[i], str);
         i++;
-        np = cdr(np);
+
+        unprotect_ptr(ic->g);
+        STORE(ic->g, NULL, np, cdr(np));
     }
 
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     return ret;
 }
@@ -819,13 +947,20 @@ char **mk_string_array(IC *ic, sexpr *names) {
 /* Runs the command specified by args, and opens it as a readable
    input named "name". */
 void openshell(IC *ic, sexpr *name, sexpr *args) {
+    protect_ptr(ic->g, (void **)&name);
+    protect_ptr(ic->g, (void **)&args);
+
     sexpr *file = findfile(ic, name);
-    char **argv;
+    protect_ptr(ic->g, (void **)&file);
+
+    char **argv = NULL;
+    protect_ptr(ic->g, (void **)&argv);
+
     FILE *fp;
     int pipefd[2];
     
     /* Convert to a name and force an error early if we can't. */
-    name = to_name(ic, name);
+    STORE(ic->g, NULL, name, to_name(ic, name));
 
     if(!is_nil(ic, file)) {
         eprintf(ic, "File ");
@@ -836,21 +971,23 @@ void openshell(IC *ic, sexpr *name, sexpr *args) {
 
     if(args->t == NAME) {
         /* If args is just a single name, then run it with the shell. */
-        sexpr *sh, *mc;
-        sh = intern(ic, "sh");
+        sexpr *sh = intern(ic, "sh");
         protect_ptr(ic->g, (void **) &sh);
-        mc = intern(ic, "-c");
+
+        sexpr *mc = intern(ic, "-c");
         protect_ptr(ic->g, (void **) &mc);
 
-        argv = mk_string_array(ic,
-                   cons(ic, sh,
-                            cons(ic, mc,
-                                     cons(ic, args, ic->g_nil))));
+        STORE(ic->g, NULL, argv,
+              mk_string_array(ic, listl(ic, sh, mc, args, NULL)));
+        // argv = mk_string_array(ic,
+        //            cons(ic, sh,
+        //                     cons(ic, mc,
+        //                              cons(ic, args, ic->g_nil))));
         unprotect_ptr(ic->g);
         unprotect_ptr(ic->g);
     } else if(args->t == CONS) {
         /* If args is a list, then use it as the arguments to execvp. */
-        argv = mk_string_array(ic, args);
+        STORE(ic->g, NULL, argv, mk_string_array(ic, args));
     } else {
         bad_argument(ic, args);
     }
@@ -900,39 +1037,48 @@ void openshell(IC *ic, sexpr *name, sexpr *args) {
     }
 
     /* Wrap it in a FILEP sexpr. */
-    file = mk_filep(ic, fp);
+    STORE(ic->g, NULL, file, mk_filep(ic, fp));
 
     /* Add it to the open files list. */
+    sexpr *pair = cons(ic, name, file);
+    protect_ptr(ic->g, (void **)&pair);
+
     STORE(ic->g, NULL,
           ic->open_files,
-          cons(ic, cons(ic, name, file),
-                   ic->open_files));
+          cons(ic, pair, ic->open_files));
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 }
 
 
 /* Runs the args as a system command and waits for the command to terminate.
    returns the exit status. */
 sexpr *systemf(IC *ic, sexpr *args) {
-    char **argv;
+    protect_ptr(ic->g, (void **) &args);
+
+    char **argv = NULL;
+    protect_ptr(ic->g, (void **) &argv);
+
     int pid, status;
     
     if(args->t == NAME) {
         /* Use the shell if args is a name. */
-        sexpr *sh, *mc;
-        sh = intern(ic, "sh");
+        sexpr *sh = intern(ic, "sh");
         protect_ptr(ic->g, (void **) &sh);
-        mc = intern(ic, "-c");
+        sexpr *mc = intern(ic, "-c");
         protect_ptr(ic->g, (void **) &mc);
 
-        argv = mk_string_array(ic,
-                   cons(ic, sh,
-                            cons(ic, mc,
-                                     cons(ic, args, ic->g_nil))));
+        STORE(ic->g, NULL, argv, mk_string_array(ic, listl(ic, sh, mc, args, NULL)));
+
         unprotect_ptr(ic->g);
         unprotect_ptr(ic->g);
     } else if(args->t == CONS) {
         /* Use args as the arguments to execvp directly if it is a list. */
-        argv = mk_string_array(ic, args);
+        STORE(ic->g, NULL, argv, mk_string_array(ic, args));
     } else {
         bad_argument(ic, args);
     }
@@ -956,6 +1102,9 @@ sexpr *systemf(IC *ic, sexpr *args) {
     }
     
     /* Return the exit status. */
-    return mk_number(ic, WEXITSTATUS(status));
+    sexpr *ret = mk_number(ic, WEXITSTATUS(status));
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    return ret;
 }
 

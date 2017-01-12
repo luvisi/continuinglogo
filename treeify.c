@@ -84,6 +84,7 @@
 #include "global_environment.h"
 #include "pcgc.h"
 #include "io.h"
+#include "get_apply_parts.h"
 
 static int expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
 static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
@@ -109,6 +110,8 @@ static int name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining);
    RUN.
  */
 static int expr_list(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
+
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
@@ -168,11 +171,14 @@ static int expr_list(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Parse one expression. */
 static int expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
+
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
@@ -228,9 +234,7 @@ static int expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
         }
         STORE(ic->g, NULL,
                      sub_output, 
-                     cons(ic, car(sub_remaining),
-                              cons(ic, sub_output,
-                                       cons(ic, sub_output2, ic->g_nil))));
+                     listl(ic, car(sub_remaining), sub_output, sub_output2, NULL));
         STORE(ic->g, NULL, sub_remaining, sub_remaining2);
     }
 
@@ -239,6 +243,7 @@ static int expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 1;
     
     exit:
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
@@ -262,12 +267,14 @@ static int stop_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
    They must be literal sentences.
  */
 static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
+
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     sexpr *sub_output3 = NULL, *sub_remaining3 = NULL;
     int ret;
 
-    sexpr *oper;
+    sexpr *oper = NULL;
 
     protect_ptr(ic->g, (void **) &sub_output);
     protect_ptr(ic->g, (void **) &sub_output2);
@@ -275,6 +282,7 @@ static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     protect_ptr(ic->g, (void **) &sub_remaining);
     protect_ptr(ic->g, (void **) &sub_remaining2);
     protect_ptr(ic->g, (void **) &sub_remaining3);
+    protect_ptr(ic->g, (void **) &oper);
 
     /* If the input is nil, or doesn't start with IF or IFELSE, or if
        we can't parse a condition or a run_list (the first literal
@@ -289,27 +297,20 @@ static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     }
 
     /* Capture whether we used IF or IFELSE. */
-    oper = car(input);
+    STORE(ic->g, NULL, oper, car(input));
 
     /* Try to parse another run_list (the "else" argument). */
     if(run_list(ic, sub_remaining2, &sub_output3, &sub_remaining3)) {
         /* If we succeed, create a three argument (if) expression. */
         STORE(ic->g, NULL, *output,
-                           cons(ic, oper,
-                                    cons(ic, sub_output,
-                                             cons(ic, sub_output2,
-                                                      cons(ic, sub_output3,
-                                                               ic->g_nil)))));
+              listl(ic, oper, sub_output, sub_output2, sub_output3, NULL));
         STORE(ic->g, NULL, *remaining, sub_remaining3);
         ret = 1;
         goto exit;
     } else {
         /* If we fail, create a two argument (if) expression. */
         STORE(ic->g, NULL, *output,
-                           cons(ic, oper,
-                                    cons(ic, sub_output,
-                                             cons(ic, sub_output2,
-                                                      ic->g_nil))));
+              listl(ic, oper, sub_output, sub_output2, NULL));
         STORE(ic->g, NULL, *remaining, sub_remaining2);
         ret = 1;
         goto exit;
@@ -323,12 +324,16 @@ static int if_expr(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Parse a sentence as a list of Logo commands.
    For handling the arguments to IF/IFELSE. */
 static int run_list(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
+
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
@@ -373,11 +378,14 @@ static int run_list(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Attempt to parse a sum/difference of one or more terms. */
 static int sum(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
+
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
@@ -406,9 +414,7 @@ static int sum(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
         }
         STORE(ic->g, NULL,
                      sub_output,
-                     cons(ic, car(sub_remaining),
-                              cons(ic, sub_output,
-                                       cons(ic, sub_output2, ic->g_nil))));
+              listl(ic, car(sub_remaining), sub_output, sub_output2, NULL));
         STORE(ic->g, NULL, sub_remaining, sub_remaining2);
     }
 
@@ -421,11 +427,14 @@ static int sum(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Parse a product/quotient of one or more factors. */
 static int term(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
+
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
@@ -454,9 +463,7 @@ static int term(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
         }
         STORE(ic->g, NULL,
                      sub_output,
-                     cons(ic, car(sub_remaining),
-                              cons(ic, sub_output,
-                                       cons(ic, sub_output2, ic->g_nil))));
+              listl(ic, car(sub_remaining), sub_output, sub_output2, NULL));
         STORE(ic->g, NULL, sub_remaining, sub_remaining2);
     }
 
@@ -469,11 +476,13 @@ static int term(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Parse a factor, which can come in many forms... */
 static int factor(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
@@ -498,7 +507,7 @@ static int factor(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
             ret = 0;
             goto exit;
          }
-        STORE(ic->g, NULL, *output, cons(ic, ic->n_minus, cons(ic, sub_output, ic->g_nil)));
+        STORE(ic->g, NULL, *output, listl(ic, ic->n_minus, sub_output, NULL));
         STORE(ic->g, NULL, *remaining, sub_remaining);
         ret = 1;
         goto exit;
@@ -611,12 +620,14 @@ static int factor(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* :FOO -> FOO
    In Lisp, FOO evaluates to the value of FOO. */
 static int colon_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     int ret;
 
     if(is_nil(ic, input)) {
@@ -636,11 +647,13 @@ static int colon_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* "FOO -> (quote FOO) */
 static int quote_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     int ret;
 
     if(is_nil(ic, input)) {
@@ -651,11 +664,13 @@ static int quote_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     if(car(input)->t == NAME &&
        car(input)->u.name.length >= 1 &&
        car(input)->u.name.head[car(input)->u.name.start] == '"') {
+        sexpr *unquoted = butfirst(ic, car(input));
+        protect_ptr(ic->g, (void **) &unquoted);
+
         STORE(ic->g, NULL, *output,
-                           cons(ic, ic->n_quote,
-                                    cons(ic, butfirst(ic, car(input)),
-                                             ic->g_nil)));
+              listl(ic, ic->n_quote, unquoted, NULL));
         STORE(ic->g, NULL, *remaining, cdr(input));
+        unprotect_ptr(ic->g);
         ret = 1;
         goto exit;
     }
@@ -663,12 +678,14 @@ static int quote_name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 
 /* THINGQUOTE <thing> -> <thing> */
 static int thingquote(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     int ret;
 
     if(is_nil(ic, input)) {
@@ -687,12 +704,14 @@ static int thingquote(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 
 /* Utility procedure for matching a single name. */
 static int name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     int ret;
 
     if(is_nil(ic, input)) {
@@ -710,11 +729,13 @@ static int name(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* (...) -> (quote (...)) */
 static int sentence(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     int ret;
 
     if(is_nil(ic, input)) {
@@ -724,9 +745,7 @@ static int sentence(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
     if(car(input)->t == CONS || is_nil(ic, car(input))) {
         STORE(ic->g, NULL, *output,
-                           cons(ic, ic->n_quote,
-                                    cons(ic, car(input),
-                                             ic->g_nil)));
+              listl(ic, ic->n_quote, car(input), NULL));
         STORE(ic->g, NULL, *remaining, cdr(input));
         ret = 1;
         goto exit;
@@ -735,11 +754,13 @@ static int sentence(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* {...} -> (quote {...}) */
 static int array_lit(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     int ret;
 
     if(is_nil(ic, input)) {
@@ -749,9 +770,7 @@ static int array_lit(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
     if(car(input)->t == ARRAY) {
         STORE(ic->g, NULL, *output,
-                           cons(ic, ic->n_quote,
-                                    cons(ic, car(input),
-                                             ic->g_nil)));
+              listl(ic, ic->n_quote, car(input), NULL));
         STORE(ic->g, NULL, *remaining, cdr(input));
         ret = 1;
         goto exit;
@@ -760,11 +779,13 @@ static int array_lit(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Parse a number. */
 static int number(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     int ret;
 
     if(is_nil(ic, input)) {
@@ -782,6 +803,7 @@ static int number(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
     ret = 0;
 
     exit:
+    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -790,15 +812,21 @@ static int number(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
 
    We need to avoid trying to parse a parenthesized subexpression. */
 static int explicit_procedure_call(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
-    sexpr *proc, *funarg, *macro, *oper;
     int ret;
 
     protect_ptr(ic->g, (void **) &sub_output);
     protect_ptr(ic->g, (void **) &sub_output2);
     protect_ptr(ic->g, (void **) &sub_remaining);
     protect_ptr(ic->g, (void **) &sub_remaining2);
+
+    sexpr *proc = NULL, *funarg = NULL, *macro = NULL, *oper = NULL;
+    protect_ptr(ic->g, (void **) &proc);
+    protect_ptr(ic->g, (void **) &funarg);
+    protect_ptr(ic->g, (void **) &macro);
+    protect_ptr(ic->g, (void **) &oper);
 
     if(is_nil(ic, input)) {
         ret = 0;
@@ -892,12 +920,18 @@ static int explicit_procedure_call(IC *ic, sexpr *input, sexpr **output, sexpr *
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
 /* Parse all of the arguments in an explicit procedure call up to the
    closing parenthesis. */
 static int explicit_tail(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
@@ -941,6 +975,7 @@ static int explicit_tail(IC *ic, sexpr *input, sexpr **output, sexpr **remaining
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -949,6 +984,7 @@ static int explicit_tail(IC *ic, sexpr *input, sexpr **output, sexpr **remaining
    This helper function is passed the number of arguments that are expected
    and attempts to parse them. */
 static int implicit_procedure_call_tail(IC *ic, sexpr *input, sexpr **output, sexpr **remaining, int args_left) {
+    protect_ptr(ic->g, (void **) &input);
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
     int ret;
@@ -995,6 +1031,7 @@ static int implicit_procedure_call_tail(IC *ic, sexpr *input, sexpr **output, se
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -1002,15 +1039,21 @@ static int implicit_procedure_call_tail(IC *ic, sexpr *input, sexpr **output, se
    The number of arguments is determined by the default arity of the operator.
  */
 static int implicit_procedure_call(IC *ic, sexpr *input, sexpr **output, sexpr **remaining) {
+    protect_ptr(ic->g, (void **) &input);
     sexpr *sub_output = NULL, *sub_remaining = NULL;
     sexpr *sub_output2 = NULL, *sub_remaining2 = NULL;
-    sexpr *proc, *funarg, *macro, *oper;
     int ret;
 
     protect_ptr(ic->g, (void **) &sub_output);
     protect_ptr(ic->g, (void **) &sub_output2);
     protect_ptr(ic->g, (void **) &sub_remaining);
     protect_ptr(ic->g, (void **) &sub_remaining2);
+
+    sexpr *proc = NULL, *funarg = NULL, *macro = NULL, *oper = NULL;
+    protect_ptr(ic->g, (void **) &proc);
+    protect_ptr(ic->g, (void **) &funarg);
+    protect_ptr(ic->g, (void **) &macro);
+    protect_ptr(ic->g, (void **) &oper);
 
     if(is_nil(ic, input)) {
         ret = 0;
@@ -1063,6 +1106,11 @@ static int implicit_procedure_call(IC *ic, sexpr *input, sexpr **output, sexpr *
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
 }
 
@@ -1070,7 +1118,11 @@ static int implicit_procedure_call(IC *ic, sexpr *input, sexpr **output, sexpr *
    Passed a list of Logo commands.
    Returns a list of Lisp expressions. */
 sexpr *treeify(IC *ic, sexpr *input) {
+    protect_ptr(ic->g, (void **) &input);
+
     sexpr *output = NULL, *remaining = NULL;
+    protect_ptr(ic->g, (void **) &output);
+    protect_ptr(ic->g, (void **) &remaining);
 
     /* If we are passed a non-nil input that is not a cons,
        then we parse a list containing the input.
@@ -1081,6 +1133,10 @@ sexpr *treeify(IC *ic, sexpr *input) {
     if(!expr_list(ic, input, &output, &remaining)) {
         return ic->g_nil;
     }
+
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
 
     return output;
 }

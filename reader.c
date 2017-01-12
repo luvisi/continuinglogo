@@ -188,24 +188,27 @@ sexpr *readobj(IC *ic) {
      !strcmp(token, ",@")) {
       /* We are going to read the following object, and then wrap it in
          a call to something.  Figure out what that something is. */
-      sexpr *quoter;
+      sexpr *quoter = NULL;
+      protect_ptr(ic->g, (void **)&quoter);
       if(!strcmp(token, "\'"))
-          quoter = ic->n_quote;
+          STORE(ic->g, NULL, quoter, ic->n_quote);
       else if(!strcmp(token, "`"))
-          quoter = ic->n_quasiquote;
+          STORE(ic->g, NULL, quoter, ic->n_quasiquote);
       else if(!strcmp(token, ","))
-          quoter = ic->n_unquote;
+          STORE(ic->g, NULL, quoter, ic->n_unquote);
       else if(!strcmp(token, ",@"))
-          quoter = ic->n_unquote_splicing;
+          STORE(ic->g, NULL, quoter, ic->n_unquote_splicing);
       else {
           fprintf(stderr,
                   "Fatal error in lisp reader - this should never happen!\n");
           longjmp(ic->quit, 1);
       }
     
-    sexpr *ret = cons(ic, quoter,
-                          cons(ic, readobj(ic),
-                                   ic->g_nil));
+    sexpr *obj = readobj(ic);
+    protect_ptr(ic->g, (void **)&obj);
+    sexpr *ret = listl(ic, quoter, obj, NULL);
+    unprotect_ptr(ic->g);
+    unprotect_ptr(ic->g);
     return ret;
   }
 
@@ -224,23 +227,24 @@ sexpr *readobj(IC *ic) {
 
 /* Read a list.  The opening '(' has already been read when this is called. */
 static sexpr *readlist(IC *ic) {
-  reader *r = ic->r;
-  sexpr *first, *tmp;
-  char *token = gettoken(r);
+  char *token = gettoken(ic->r);
   if(token == NULL) return ic->eof;
 
   if(!strcmp(token, ")")) return ic->g_nil;
   if(!strcmp(token, ".")) {
-    tmp = readobj(ic);
-    token = gettoken(r);
+    sexpr *tmp = readobj(ic);
+    token = gettoken(ic->r);
     if(token == NULL) return ic->eof;
     if(strcmp(token, ")")) return ic->g_nil;
     return tmp;
   }
-  putback_token(r, token);
-  first = readobj(ic); /* Must force evaluation order */
+  putback_token(ic->r, token);
+  sexpr *first = readobj(ic); /* Must force evaluation order */
   protect_ptr(ic->g, (void **) &first);
-  sexpr *ret = cons(ic, first, readlist(ic));
+  sexpr *rest = readlist(ic);
+  protect_ptr(ic->g, (void **) &rest);
+  sexpr *ret = cons(ic, first, rest);
+  unprotect_ptr(ic->g);
   unprotect_ptr(ic->g);
   return ret;
 }

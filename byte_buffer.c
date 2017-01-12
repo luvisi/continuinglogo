@@ -33,8 +33,13 @@ void mark_byte_buffer(GC *g, void *c, object_marker om, weak_pointer_registerer 
 
 /* Creates a byte_buffer. */
 byte_buffer *mk_byte_buffer(IC *ic) {
+    char *buf = (char *)ic_xmalloc(ic, BYTE_BUFFER_INCREMENT, mark_cstring);
+    protect_ptr(ic->g, (void **) &buf);
+
     byte_buffer *b = (byte_buffer *)ic_xmalloc(ic, sizeof(byte_buffer), mark_byte_buffer);
-    b->buffer = (char *)ic_xmalloc(ic, BYTE_BUFFER_INCREMENT, mark_cstring);
+    unprotect_ptr(ic->g);
+
+    b->buffer = buf;
     b->size = BYTE_BUFFER_INCREMENT;
     b->used = 0;
     return b;
@@ -58,9 +63,16 @@ void add_to_byte_buffer(IC *ic, byte_buffer *b, char ch) {
 
 /* Convert the contents of the byte_buffer into a word. */
 sexpr *word_from_byte_buffer(IC *ic, byte_buffer *b) {
-    sexpr *ret;
     protect_ptr(ic->g, (void **) &b);
-    ret = intern_len(ic, NULL, b->buffer, b->used);
+
+    char *s = (char *)ic_xmalloc(ic, b->used, mark_cstring);
+    protect_ptr(ic->g, (void **) &s);
+
+    strncpy(s, b->buffer, b->used);
+
+    sexpr *ret = intern_len_gc(ic, s, 0, b->used);
+
+    unprotect_ptr(ic->g);
     unprotect_ptr(ic->g);
     return ret;
 }

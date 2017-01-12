@@ -3,6 +3,7 @@
 #include "turtles.h"
 #include "global_environment.h"
 #include <vector>
+#include <limits.h>
 
 /* Draw the bitmap for this turtle, appropriately scaled, rotated, and
    located.
@@ -11,7 +12,7 @@
 void BitmapTurtle::draw(wxBitmap &target, double x, double y, double heading, double xscale, double yscale, wxPen pen) {
     wxMemoryDC dc;
     dc.SelectObject(target);
-    dc.SetAxisOrientation(true, true);
+    dc.ResetBoundingBox();
 
     /* We use a wxGraphicsContext because it supports arbitrary
        affine transformations. */
@@ -20,6 +21,8 @@ void BitmapTurtle::draw(wxBitmap &target, double x, double y, double heading, do
     gc->SetPen(pen);
 
     gc->PushState();
+
+#if 0
     gc->Translate(250 + x, 250 - y);  /* Move (0, 0) of image to (x, y) with
                                          (x, y) in turtle coordinates and the
                                          arguments to Translate() in screen
@@ -34,10 +37,36 @@ void BitmapTurtle::draw(wxBitmap &target, double x, double y, double heading, do
 
     /* Scale the bitmap itself. */
     gc->Scale(xscale, yscale);
+#endif
 
+    wxGraphicsMatrix transform = matrix(x, y, heading, xscale, yscale);
+    gc->SetTransform(transform);
     gcdc.DrawBitmap(bm, 0, 0, true);
     gc->PopState();
     dc.SelectObject(wxNullBitmap);
+}
+
+wxRect2DDouble BitmapTurtle::boundingbox(wxGraphicsMatrix transform) {
+
+    int width = bm.GetWidth();
+    int height = bm.GetHeight();
+
+    int topy = INT_MAX,
+        bottomy = INT_MIN,
+        leftx = INT_MAX,
+        rightx = INT_MIN;
+
+    for(int px = 0; px <= width; px += width)
+        for(int py = 0; py <= height; py += height) {
+            wxDouble tx = px, ty = py;
+            transform.TransformPoint(&tx, &ty);
+            if(tx < leftx) leftx = floor(tx);
+            if(tx > rightx) rightx = ceil(tx);
+            if(ty < topy) topy = floor(ty);
+            if(ty > bottomy) bottomy = ceil(ty);
+        }
+
+    return wxRect2DDouble(leftx, topy, rightx-leftx, bottomy-topy);
 }
 
 /* Draw a path turtle.  Slightly simpler than a BitmapTurtle because there
@@ -50,18 +79,38 @@ void PathTurtle::draw(wxBitmap &target, double x, double y, double heading, doub
     wxPen pathpen = pen;
     pathpen.SetWidth(1);
 
-    dc.SetAxisOrientation(true, true);
     wxGCDC gcdc(dc);
+    gcdc.ResetBoundingBox();
     wxGraphicsContext *gc = gcdc.GetGraphicsContext();
     gc->SetPen(pathpen);
 
+/*
     gc->PushState();
     gc->Translate(250 + x, 250 - y);
     gc->Rotate(DegToRad(heading));
     gc->Scale(xscale, yscale);
     gc->StrokePath(path);
     gc->PopState();
+*/
+
+    wxGraphicsPath p = path;
+    p.Transform(matrix(x, y, heading, xscale, yscale));
+    gc->StrokePath(p);
+
     dc.SelectObject(wxNullBitmap);
+}
+
+wxRect2DDouble PathTurtle::boundingbox(wxGraphicsMatrix transform) {
+    wxGraphicsPath p = path;
+    p.Transform(transform);
+
+    wxRect2DDouble ret = p.GetBox();
+    ret.SetTop(floor(ret.GetTop()));
+    ret.SetLeft(floor(ret.GetLeft()));
+    ret.SetBottom(ceil(ret.GetBottom()));
+    ret.SetRight(ceil(ret.GetRight()));
+
+    return ret;
 }
 
 /* FORWARD commands end up here.
@@ -317,7 +366,8 @@ bool BitmapTurtle::over(PixelCriteria criteria1,
     wxImage bg = Background->ConvertToImage();
 
     /* Loop over every pixel in the image, testing criteria1. */
-    for(int imy = 0; imy < imheight; imy++) {
+    //for(int imy = 0; imy < imheight; imy++) {
+    for(int imy = imheight-1; imy >= 0; imy--) {
         for(int imx = 0; imx < imwidth; imx++) {
             if(criteria1.matches(im, imx, imy)) {
                 /* Figure out what background pixel is under this
@@ -367,6 +417,11 @@ bool BitmapTurtle::touching(PixelCriteria criteria1,
                             wxGraphicsMatrix gm,
                             Turtle &other,
                             TurtleTypes::TurtleMode mode) {
+    if(mode != TurtleTypes::WRAP &&
+       other.mode != TurtleTypes::WRAP &&
+       !boundingbox(gm).Intersects(other.boundingbox()))
+        return false;
+
     CollisionTester tester(other, criteria2);
 
     wxImage im = bm.ConvertToImage();
@@ -423,6 +478,11 @@ bool PathTurtle::touching(PixelCriteria criteria1,
                           wxGraphicsMatrix gm,
                           class Turtle &other,
                           TurtleTypes::TurtleMode mode) {
+    if(mode != TurtleTypes::WRAP &&
+       other.mode != TurtleTypes::WRAP &&
+       !boundingbox(gm).Intersects(other.boundingbox()))
+        return false;
+
     CollisionTester tester(other, criteria2);
 
     /* We're going to run x from -6 to 6.  As we do, we trace both the
