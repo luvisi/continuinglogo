@@ -25,7 +25,7 @@
         (output (internal_gensym name)))
     (if (not (namep 'gensym.number))
         (make 'gensym.number 0))
-        (make 'gensym.number (inc gensym.number))
+    (make 'gensym.number (inc gensym.number))
     (word 'g gensym.number)))
 (bury '((gensym) (gensym.number)))
 
@@ -45,20 +45,20 @@
 ; The gensyms are to avoid name captures.
 (fset 'map
   ((lambda (f ls) (eval
-   (list 'lambda (list f (list ls) 2)
-    (list 'if (list 'emptyp (list 'car ls))
-	      (list 'car ls)
-	      (list 'combine (list 'apply f (list 'low_level_map 
-					          ''first
-					          ls))
-			     (list 'apply
-				   ''map
-				   (list 'cons
-				         f
-				         (list 'low_level_map
-					        ''butfirst
-					        ls))))))))
-(gensym 'funcsym) (gensym 'listssym)))
+    (list 'lambda (list f (list ls) 2)
+     (list 'if (list 'emptyp (list 'car ls))
+	       (list 'car ls)
+	       (list 'combine (list 'apply f (list 'low_level_map 
+					           ''first
+					           ls))
+			      (list 'apply
+				    ''map
+				    (list 'cons
+				          f
+				          (list 'low_level_map
+					         ''butfirst
+					         ls))))))))
+   (gensym 'funcsym) (gensym 'listssym)))
 
 (fset 'cadr (lambda (x) (car (cdr x))))
 (fset 'caddr (lambda (x) (car (cdr (cdr x)))))
@@ -136,6 +136,8 @@
           'true
           (array_memberp thing array (inc index) count))))
 
+; FIRST of an array returns its origin, AKA the index of its
+; first element.
 (defun (memberp i l)
   (if (emptyp l)
       'false
@@ -292,8 +294,12 @@
                (make (first ,vars) (first ,vals))
                (setvals (bf ,vars) (bf ,vals))))))
 
+(defun (do_nothing (args)))
+
 ; to_proc is used to convert a template into a procedure.
 (defun (to_proc e)
+  (if (emptyp e)
+      (output (symbol_function 'do_nothing)))
   (if (not (consp e))
       (output e))
 
@@ -352,13 +358,13 @@
 		        args))))))
 
 ; McCarthy's label operator.
-(fset 'label
+(fset 'mccarthy_label
   (macro 'lisp_macro
     (lambda (name func (body))
       `(let ((,name ,func))
           ,@body))))
 
-;(fset 'label
+;(fset 'mccarthy_label
 ;  (macro 'lisp_macro
 ;    (lambda (name func (body))
 ;      (list (cons 'lambda (cons (list name) body)) func))))
@@ -368,7 +374,7 @@
   (macro 'lisp_macro
     (lambda (cond (code))
       (let ((loop (gensym 'tmploop)))
-        `(label ,loop 
+        `(mccarthy_label ,loop 
 	        (lambda ()
 	          (upstack_output
 	            (if ,cond
@@ -425,6 +431,12 @@
 (make 'readline_prompt (word '> (char 32)))
 (bury '(() (readline_prompt)))
 
+(defun (merge_lines line1 line2)
+  (mk_line (word (line_raw line1) (line_raw line2))
+           (sentence (line_parsed line1) (line_parsed line2))
+           (line_procedure line1)))
+           
+
 ; Read and return a list of LINE objects during procedure definition.
 ; The definition ends when we read a line that starts with "end".
 (defun (readbody_helper procedure)
@@ -434,7 +446,12 @@
   (if (not (emptyp parsed))
       (if (eq (car parsed) 'end)
           (output '())))
-  (cons line (readbody_helper procedure)))
+  (let ((restlines (readbody_helper procedure)))
+    (if (consp restlines)
+        (if (and (emptyp (cdr restlines))
+                 (emptyp (line_parsed (car restlines))))
+            (output (list (merge_lines line (car restlines))))))
+    (cons line restlines)))
 
 ; In the body of a Logo procedure, for each line we include a LINE
 ; object followed by the treeified form of the line.
@@ -808,6 +825,36 @@
           -1
           1)))
 
+
+(fset 'load
+  (let ((file (gensym 'file))
+        (oldreader (gensym 'oldreader))
+        (oldstartup (gensym 'oldstartup))
+        (toprint (gensym 'toprint)))
+    (eval
+      `(lambda (,file)
+        (local ',oldstartup)
+        (if (namep 'startup)
+            (make ',oldstartup startup)
+            (make ',oldstartup '()))
+        (local ',toprint)
+        (local ',oldreader)
+        (make ',oldreader (reader))
+        (openread ,file)
+        (setread ,file)
+        (catch 'error '(logo))
+        (make ',toprint (error))
+        (setread ,oldreader)
+        (close ,file)
+        (if (emptyp ,toprint)
+            (begin (make ',toprint 'Loaded)
+                   (if (namep 'startup)
+                       (if (not (.eq startup ,oldstartup))
+                           (run startup)))))
+        (print ,toprint)))))
+        
+        
+
 ;;;;;;;;;;;;;;;;;;;;;
 ;;;; BEGIN TESTS ;;;;
 ;;;;;;;;;;;;;;;;;;;;;
@@ -866,7 +913,7 @@
 
 
 (fset 'fact (lambda (x)
-             (label f
+             (mccarthy_label f
                     (lambda (x)
                       (if (eq x 0)
                           1

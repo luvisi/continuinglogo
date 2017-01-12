@@ -1,10 +1,46 @@
 
+to union :l1 :l2
+    local "thing
+    if emptyp :l1 [op :l2]
+    make "thing first :l1
+    if memberp :thing :l2 [op union bf :l1 :l2]
+    op combine :thing union bf :l1 :l2
+end
+bury "union
+
+to intersect :l1 :l2
+    local "thing
+    if emptyp :l1 [op []]
+    make "thing first :l1
+    if memberp :thing :l2 [op combine :thing intersect bf :l1 :l2]
+    op intersect bf :l1 :l2
+end
+bury "intersect
+
 to pick :thing
   output item ((ifelse arrayp :thing [first :thing] [1]) + ~
                random count :thing) ~
               :thing
 end
 bury "pick
+
+to min :arg1 :arg2
+    if :arg1 < :arg2 [op :arg1]
+    op :arg2
+end
+
+to max :arg1 :arg2
+    if :arg1 > :arg2 [op :arg1]
+    op :arg2
+end
+bury [min max]
+
+to startswith :thing1 :thing2
+    if emptyp :thing1 [op "true]
+    if (first :thing1) <> (first :thing2) [op "false]
+    op startswith bf :thing1 bf :thing2
+end
+bury [startswith]
 
 ; A word is the name of a property list if it has a non-empty
 ; property list.
@@ -221,11 +257,11 @@ bury "pot
 
 
 .macro savecontents :file :contents
-  output (list "openwrite word "" :file          ~
-               "setwrite word "" :file           ~
+  output (list "openwrite quoted :file          ~
+               "setwrite quoted :file           ~
                "printout quote_if_name :contents ~
                "setwrite []                      ~
-               "close word "" :file              ~
+               "close quoted :file              ~
                "print ""Saved)
 end
 bury "savecontents
@@ -234,24 +270,6 @@ bury "savecontents
   output (list "savecontents quote_if_name :file "contents)
 end
 bury "save
-
-to load.helper
-  local "startup
-  logo
-  if namep "startup [run :startup]
-end
-bury "load.helper
-
-.macro load :file
-  localmake "oldreader reader
-  output (list "openread word "" :file    ~
-               "setread word "" :file     ~
-               "load.helper               ~
-               "setread quoted :oldreader ~
-               "close word "" :file       ~
-               "print ""Loaded)
-end
-bury "load
 
 to pause_caller :paused.procedure
     pause
@@ -357,14 +375,37 @@ end
 bury [[edit.editor] [edit.editor]]
 
 ; Edit the procedures, variables, and property lists in
-; :contentslist.
+; :contentslist.  Terminal version.
 ; This is done by saving the definitions to a temp file, editing the
 ; file, and then loading the file.
-to edit :contentslist [:tmp "logo.temp.txt]
+to terminal.edit :contentslist [:tmp "logo.temp.txt]
     savecontents :tmp :contentslist
     localmake "status system (list edit.editor :tmp)
     if :status <> 0 [throw "error [edit error]]
     load :tmp
+end
+bury "terminal.edit
+
+; GUI Edit. Edit using wxWidgets wxedit.
+to wxwidgets.edit :contentslist [:tmp "logo.temp.txt]
+    localmake "target [gedit.working.string]
+    savecontents :target :contentslist
+    openwrite :tmp
+    setwrite :tmp
+    print wxedit :gedit.working.string
+    setwrite []
+    close :tmp
+    load :tmp
+end
+bury [[wxwidgets.edit] [gedit.working.string]]
+
+; Edit.  Call terminal.edit or wxwidgets.edit as appropriate.
+to edit :contentslist [:tmp "logo.temp.txt]
+    ifelse :terminalp [
+        (terminal.edit :contentslist :tmp)
+    ] [
+        (wxwidgets.edit :contentslist :tmp)
+    ]
 end
 bury "edit
 
@@ -431,18 +472,18 @@ end
 bury "plists
 
 ; Returns the current repetition count for the innermost REPEAT or FOREVER.
-to repcount
-  op :repcount
-end
-bury "repcount
+;to repcount
+;  op :repcount
+;end
+;bury "repcount
 
 .macro repeat.helper :current.count :count :block
   if :current.count < :count [
-    op (list "invoke "fput [repcount] :block :current.count ~
+    op (list "invoke "fput [template.number] :block :current.count ~
         "repeat.helper :current.count+1 :count :block)
   ] 
   if :current.count = :count [
-    op (list "invoke "fput [repcount] :block :current.count)
+    op (list "invoke "fput [template.number] :block :current.count)
   ]
   op []
 end
@@ -454,7 +495,7 @@ end
 bury "repeat
 
 .macro forever.helper :current.count :block
-  op (list "invoke "fput [repcount] :block :current.count ~
+  op (list "invoke "fput [template.number] :block :current.count ~
       "forever.helper :current.count+1 :block)
 end
 bury "forever.helper
@@ -543,9 +584,457 @@ bury "fail
 ;end
 ;bury "#
 
+
+; Turtle commands.
+; By default, we send commands to turtle 0.
+make "wx.active.turtles [0]
+bury [[][wx.active.turtles]]
+
+to ask :ask.turtlelist :ask.instructions
+    localmake "wx.active.turtles (se :ask.turtlelist)
+    .maybeoutput run :ask.instructions
+end
+bury "ask
+
+to tell :tell.turtlelist
+    make "wx.active.turtles (se :tell.turtlelist)
+end
+bury "tell
+
+
+to each.helper :each.turtlelist :each.instructions
+    if emptyp :each.turtlelist [stop]
+    make "wx.active.turtles (se first :each.turtlelist)
+    if emptyp bf :each.turtlelist [
+        .maybeoutput run :each.instructions
+    ]
+    ignore runresult :each.instructions
+    each.helper bf :each.turtlelist :each.instructions
+end
+bury "each.helper
+
+to each :each.instructions
+    localmake "each.turtlelist :wx.active.turtles
+    local "wx.active.turtles 
+    each.helper :each.turtlelist :each.instructions
+end
+bury "each
+
+to who
+    if (count :wx.active.turtles) = 1 [op first :wx.active.turtles]
+    op :wx.active.turtles
+end
+bury "who
+
+to forward :d
+    foreach :wx.active.turtles [tforward ? :d]
+end
+copydef "fd "forward
+bury [forward fd]
+
+to back :d
+    foreach :wx.active.turtles [tforward ? -:d]
+end
+copydef "bk "back
+bury [back bk]
+
+to arc :angle :distance
+    foreach :wx.active.turtles [tarc ? :angle :distance]
+end    
+bury "arc
+
+to right :a
+    foreach :wx.active.turtles [tright ? :a]
+end
+copydef "rt "right
+bury [right rt]
+
+to left :a
+    foreach :wx.active.turtles [tright ? -:a]
+end
+copydef "lt "left
+bury [left lt]
+
+to penup
+    foreach :wx.active.turtles [tpenup ?]
+end
+copydef "pu "penup
+bury [penup pu]
+
+to pendown
+    foreach :wx.active.turtles [tpendown ?]
+end
+copydef "pd "pendown
+bury [pendown pd]
+
+to pendownp
+    op tpendownp first :wx.active.turtles
+end
+copydef "pendown? "pendownp
+bury [pendownp pendown?]
+
+
+to hideturtle
+    foreach :wx.active.turtles [thideturtle ?]
+end
+copydef "ht "hideturtle
+bury [hideturtle ht]
+
+to showturtle
+    foreach :wx.active.turtles [tshowturtle ?]
+end
+copydef "st "showturtle
+bury [showturtle st]
+
+to shownp
+    op tshown first :wx.active.turtles
+end
+copydef "shown? "shownp
+bury [shownp shown?]
+
+to setxy :x :y
+    foreach :wx.active.turtles [tsetxy ? :x :y]
+end
+bury "setxy
+
+to setx :x
+    foreach :wx.active.turtles [tsetx ? :x]
+end
+bury "setx
+
+to sety :y
+    foreach :wx.active.turtles [tsety ? :y]
+end
+bury "sety
+
+to wrap
+    foreach :wx.active.turtles [twrap ?]
+end
+to window
+    foreach :wx.active.turtles [twindow ?]
+end
+to fence
+    foreach :wx.active.turtles [tfence ?]
+end
+to turtlemode
+    op tturtlemode first :wx.active.turtles
+end
+bury [wrap window fence turtlemode]
+
+to xcor
+    op txcor first :wx.active.turtles
+end
+bury "xcor
+
+to ycor
+    op tycor first :wx.active.turtles
+end
+bury "ycor
+
+to moveuntil :angle :distance :stepsize :conditions :turtles
+    op tmoveuntil (first :wx.active.turtles) :angle :distance :stepsize :conditions :turtles
+end
+bury "moveuntil
+
+to heading
+    op theading first :wx.active.turtles
+end
+bury "heading
+
+to setheading :heading
+    foreach :wx.active.turtles [tsetheading ? :heading]
+end
+bury "setheading
+    
+to rotation
+    op trotation first :wx.active.turtles
+end
+bury "rotation
+
+to setrotation :rotation
+    foreach :wx.active.turtles [tsetrotation ? :rotation]
+end
+bury "setrotation
+    
+to rotate :a
+    foreach :wx.active.turtles [trotate ? :a]
+end
+bury "rotate
+
+to setpos :pos
+    foreach :wx.active.turtles [tsetxy ? first :pos first bf :pos]
+end
+bury "setpos
+    
+to pos
+    op se txcor first :wx.active.turtles tycor first :wx.active.turtles
+end
+bury "pos
+
+to abs :x
+    op if :x<0 [-:x] [:x]
+end
+bury "abs
+
+to towards :pos
+    localmake "dx (first :pos)-xcor
+    localmake "dy (last :pos)-ycor
+    localmake "adx abs :dx
+    localmake "ady abs :dy
+    localmake "ang if :adx=0 [0] [if :ady=0 [90] [arctan(:adx/:ady)]]
+    if :dy<0 [make "ang 180-:ang]
+    if :dx<0 [make "ang 360-:ang]
+    op :ang
+end
+bury "towards
+
+to home
+    setxy 0 0
+    setheading 0
+end
+bury "home
+
+to setpensize :size
+    foreach :wx.active.turtles [tsetpensize ? :size]
+end
+bury "setpensize
+
+to pensize
+    op tpensize first :wx.active.turtles
+end
+bury "pensize
+
+to setpencolor :rgblist
+    local [r g b]
+    make "r first :rgblist
+    make "g first bf :rgblist
+    make "b first bf bf :rgblist
+    foreach :wx.active.turtles [tsetpencolor ? :r :g :b]
+end
+copydef "setpc "setpencolor
+bury [setpc setpencolor]
+
+to capturebitmap :x1 :y1 :x2 :y2 :xcenter :ycenter :transparent
+    foreach :wx.active.turtles [
+        tcapturebitmap ? :x1 :y1 :x2 :y2 :xcenter :ycenter :transparent
+    ]
+end
+bury "capturebitmap
+
+to setshape :shape
+    foreach :wx.active.turtles [
+        tsetshape ? :shape
+    ]
+end
+bury "setshape
+
+to setxscale :scale
+    foreach :wx.active.turtles [
+        tsetxscale ? :scale
+    ]
+end
+bury "setxscale
+
+to setyscale :scale
+    foreach :wx.active.turtles [
+        tsetyscale ? :scale
+    ]
+end
+bury "setyscale
+
+to setxyscale :xscale :yscale
+    foreach :wx.active.turtles [
+        tsetxscale ? :xscale
+        tsetyscale ? :yscale
+    ]
+end
+bury "setxyscale
+
+to setscale :scale
+    setxyscale :scale :scale
+end
+bury "setscale
+
+to xscale
+    op txscale first :wx.active.turtles
+end
+bury "xscale
+
+to yscale
+    op tyscale first :wx.active.turtles
+end
+bury "yscale
+
+to over :rgb
+    local [r g b]
+    make "r first :rgb
+    make "g first bf :rgb
+    make "b first bf bf :rgb
+    foreach :wx.active.turtles [
+        if tover ? :r :g :b [op "true]
+    ]
+    op "false
+end
+bury "over
+
+to xyover :x :y :rgb
+    local [r g b]
+    make "r first :rgb
+    make "g first bf :rgb
+    make "b first bf bf :rgb
+    foreach :wx.active.turtles [
+        if txyover ? :x :y :r :g :b [op "true]
+    ]
+    op "false
+end
+bury "xyover
+
+to touching :turtle
+    foreach :wx.active.turtles [
+        if ttouching ? :turtle [op "true]
+    ]
+    op "false
+end
+bury "touching
+
+to xytouching :x :y :turtle
+    foreach :wx.active.turtles [
+        if txytouching ? :x :y :turtle [op "true]
+    ]
+    op "false
+end
+bury "xytouching
+
+to whostouching
+    local "ret
+    make "ret []
+    foreach :wx.active.turtles [
+        make "ret union (twhostouching ?) :ret
+    ]
+    op :ret
+end
+bury "whostouching
+
+to xywhostouching :x :y
+    local "ret
+    make "ret []
+    foreach :wx.active.turtles [
+        make "ret union (txywhostouching ? :x :y) :ret
+    ]
+    op :ret
+end
+bury "xywhostouching
+
+to pasttopp
+    foreach :wx.active.turtles [
+        if tpasttop ? [op "true]
+    ]
+    op "false
+end
+to pastbottomp
+    foreach :wx.active.turtles [
+        if tpastbottom ? [op "true]
+    ]
+    op "false
+end
+to pastleftp
+    foreach :wx.active.turtles [
+        if tpastleft ? [op "true]
+    ]
+    op "false
+end
+to pastrightp
+    foreach :wx.active.turtles [
+        if tpastright ? [op "true]
+    ]
+    op "false
+end
+bury [pasttopp pastbottomp pastleftp pastrightp]
+
+to penpaint
+    foreach :wx.active.turtles [tpenpaint ?]
+end
+to penerase
+    foreach :wx.active.turtles [tpenerase ?]
+end
+bury [penpaint penerase]
+
+to setbackground :rgb
+    %setbg first :rgb first bf :rgb first bf bf :rgb
+end
+copydef "setbg "setbackground
+bury [setbackground setbg]
+
+to pencolor
+    op tpencolor first :wx.active.turtles
+end
+copydef "pc "pencolor
+bury [pc pencolor]
+
+to colorunder
+    op tcolorunder first :wx.active.turtles
+end
+bury [colorunder]
+
+to xycolorunder :x :y
+    op txycolorunder first :wx.active.turtles :x :y
+end
+bury [xycolorunder]
+
+to penmode
+    op tpenmode first :wx.active.turtles
+end
+bury "penmode
+
+to fill
+    foreach :wx.active.turtles [tfill ?]
+end
+bury [fill]
+
+to label :text
+    foreach :wx.active.turtles [tlabel ? :text]
+end
+bury [label]
+
+to settext :text
+    foreach :wx.active.turtles [tsettext ? :text]
+end
+bury [settext]
+
+to gettext
+    op tgettext first :wx.active.turtles
+end
+bury [gettext]
+
+to stamp
+    foreach :wx.active.turtles [tstamp ?]
+end
+bury [stamp]
+
+to waitfor.voice :voice
+    if (timeleft :voice) > 5 [wait 1 waitfor.voice :voice]
+end
+to toot :voice :freq :duration [:volume 0.5] [:pan 0] [:attack 0.25] [:release 0.25]
+    waitfor.voice :voice
+    %toot :voice :freq :duration/60 :volume :pan :attack/60 :release/60
+end
+to toot.nonblocking :voice :freq :duration [:volume 0.5] [:pan 0] [:attack 0.25] [:release 0.25]
+    %toot :voice :freq :duration/60 :volume :pan :attack/60 :release/60
+end
+to tootreplace :voice :freq :duration [:volume 0.5] [:pan 0] [:attack 0.25] [:release 0.25]
+    %tootreplace :voice :freq :duration/60 :volume :pan :attack/60 :release/60
+end
+to timeleft :voice
+    op (%timeleft :voice)*60
+end
+bury [waitfor.voice toot toot.nonblocking tootreplace timeleft]
+
+
 ; Ignore case by default.
 make "caseignoredp "true
 bury [[] [caseignoredp]]
+
+bury [[] [terminalp]]
 
 (print [Welcome to ContinuingLogo version] :logoversion)
 bury [[] [logoversion]]

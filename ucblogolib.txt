@@ -574,3 +574,42 @@ end
 
 bury "macroexpand
 
+to pen
+op (list (ifelse pendownp ["pendown] ["penup]) ~
+         penmode pensize pencolor)
+end
+
+bury [pen]
+
+to setpen :pen_data
+ifelse equalp first bf :pen_data "erase ~
+       [penerase] ~
+       [penpaint]
+ifelse equalp first :pen_data "penup [penup] [pendown]
+setpensize first bf bf :pen_data
+setpencolor first bf bf bf :pen_data
+end
+
+bury [setpen]
+
+to mdarray :sizes [:origin 1]
+local "array
+make "array (array first :sizes :origin)
+if not emptyp bf :sizes ~
+   [for [i :origin [:origin + (first :sizes) - 1]] ~
+        [setitem :i :array (mdarray bf :sizes :origin)]]
+output :array
+end
+bury "mdarray
+
+to mditem :index :array
+if emptyp :index [op :array]
+op mditem bf :index item first :index :array
+end
+bury "mditem
+
+to mdsetitem :index :array :val
+setitem last :index (mditem bl :index :array) :val
+end
+bury "mdsetitem
+
