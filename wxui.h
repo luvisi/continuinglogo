@@ -19,8 +19,6 @@
 #include "main.h"
 #include "audio.h"
 
-using namespace std;
-
 /* The background bitmap.
    All drawing and stamping occurs here. */
 extern wxBitmap * volatile Background;

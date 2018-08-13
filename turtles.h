@@ -530,7 +530,7 @@ public:
        screenx and screeny are in screen coordinates, with (0, 0) at
        the upper left corner and the positive y axis downward. */
     bool CollidesWith(double screenx, double screeny) {
-        for(vector<wxGraphicsMatrix>::iterator it = matrices.begin();
+        for(std::vector<wxGraphicsMatrix>::iterator it = matrices.begin();
             it != matrices.end();
             it++) {
                 double tx = screenx, ty = screeny;
@@ -545,7 +545,7 @@ public:
 private:
     Turtle &turtle;
     PixelCriteria criteria;
-    vector<wxGraphicsMatrix> matrices;
+    std::vector<wxGraphicsMatrix> matrices;
 };
 
 #endif /* TURTLES_H */
